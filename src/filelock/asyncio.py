@@ -442,6 +442,7 @@ class BaseAsyncFileLock(BaseFileLock, metaclass=AsyncFileLockMeta):
         lock_filename = self.lock_file
         await self._off_loop(functools.partial(ensure_directory_exists, self._lock_path))
         attempt = 0
+        self._set_claim_deadline(start_time, timeout if blocking else 0.0)
         while True:
             self._raise_if_inherited()
             _LOGGER.debug("Attempting to acquire lock %s on %s", lock_id, lock_filename)

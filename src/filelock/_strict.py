@@ -65,15 +65,20 @@ from ._util import (
 
 if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import (
+        cancelling_oplock_wait,
         is_unlinked,
+        mark_claim_for_deletion,
         open_deletable_for_reading,
         open_read_without_oplock_wait,
         pin_directory,
+        publish_deletable_claim,
         unpin_directory,
     )
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
+
+    from ._api import FileLockContext
 
 #: The phase a claim file name records: ``intent`` while the claim waits at the doorway, ``held`` once it owns the lock.
 StrictSoftFileClaimState = Literal["intent", "held"]
@@ -244,10 +249,10 @@ class StrictSoftFileLock(BaseFileLock):
                 self._mark_descriptor_owned(sentinel_fd, sentinel_identity)
         except _ClaimScanLimitError:
             won = False
-        except BaseException:
+        except BaseException as acquisition_error:
             # Once recorded as held, the acquire's rollback releases the claim instead.
             if not self.is_locked:
-                self._discard_doorway()
+                self._discard_doorway(acquisition_error)
             raise
         if not won:
             self._discard_doorway()
@@ -300,21 +305,23 @@ class StrictSoftFileLock(BaseFileLock):
         token = secrets.token_hex(_TOKEN_HEX_LENGTH // 2)
         intent_name = _claim_name("intent", token)
         intent_path = str(claim_directory / intent_name)
-        # Record each claim before its link: once the link may have committed, any later failure must leave the name for
-        # _discard_doorway. The token makes the name unique, so removing it when the link never happened is a no-op.
+        # Record each claim before publication: once it may have committed, any later failure must leave the name for
+        # _discard_doorway. The token makes the name unique, so removing it when publication failed is a no-op.
         self._context.owner_claim_paths = (intent_path,)
         try:
-            with _pin_claim_directory(claim_directory):
-                publication_cleanup_error = _publish_record(
-                    intent_path, _claim_record(token), self._open_mode(), _open_claim_directory
-                )
-        except _PrivateRecordReclaimedError:
+            publication_cleanup_error = self._publish_intent_claim(claim_directory, intent_name, intent_path, token)
+        except _PrivateRecordReclaimedError:  # pragma: win32 no cover
             return False
         except (NotImplementedError, OSError) as error:
+            if sys.platform == "win32" and isinstance(error, BlockingIOError):  # pragma: win32 cover
+                return False
             raise_if_hard_links_unsupported(self.lock_file, error)
             if isinstance(error, OSError) and error.errno == EEXIST:
                 # Another file holds the name, so it is not this owner's to remove.
                 self._context.owner_claim_paths = ()
+                _, cleanup_errors = self._unlink_owner_claims(acquiring=True)
+                if cleanup_errors:  # pragma: win32 cover
+                    _raise_recorded_errors("strict claim protection cleanup failed", cleanup_errors)
                 return False
             raise
         if publication_cleanup_error is not None:  # pragma: needs dir-fd
@@ -330,20 +337,14 @@ class StrictSoftFileLock(BaseFileLock):
 
         held_name = _claim_name("held", token)
         self._context.owner_claim_paths = (str(claim_directory / held_name), intent_path)
-        try:
-            link_cleanup_error = _link_no_replace(claim_directory, intent_name, held_name)
-        except (NotImplementedError, OSError) as error:
-            raise_if_hard_links_unsupported(self.lock_file, error)
-            if isinstance(error, OSError) and error.errno == EEXIST:
-                self._context.owner_claim_paths = (intent_path,)
-            raise
-        if link_cleanup_error is not None:  # pragma: needs dir-fd
-            raise link_cleanup_error
+        publication_cleanup_error = self._publish_held_claim(claim_directory, intent_name, held_name, token)
+        if publication_cleanup_error is not None:  # pragma: needs dir-fd
+            raise publication_cleanup_error
 
         claims = _read_existing_claims(self.lock_file, claim_directory, entry_limit=_CLAIM_ENTRY_LIMIT)
         # Keep the intent claim for the whole hold rather than unlinking it now. The intent has existed, unchanged,
         # since this owner published it, so a contender's os.scandir is guaranteed to return it (POSIX only leaves the
-        # visibility of entries created or removed *during* a scan unspecified). The freshly linked held claim carries
+        # visibility of entries created or removed *during* a scan unspecified). The newly published held claim carries
         # no such guarantee: a scan that races its creation can miss it. Were the intent removed here, that scan could
         # observe neither claim and let a larger-token contender win over this owner.
         #
@@ -353,8 +354,78 @@ class StrictSoftFileLock(BaseFileLock):
             _claim_token_key(claim.name) for claim in claims
         ) == f"v1-{token}.claim"
 
-    def _discard_doorway(self) -> None:
-        remaining, errors = self._unlink_owner_claims()
+    def _publish_intent_claim(
+        self, claim_directory: Path, intent_name: str, intent_path: str, token: str
+    ) -> BaseException | None:
+        if sys.platform == "win32":  # pragma: win32 cover
+            self._context.claim_protection = _pin_claim_directory(claim_directory)
+            self._context.claim_descriptors = {}
+            self._publish_windows_claim(claim_directory, intent_name, token)
+            return None
+        with _pin_claim_directory(claim_directory):  # pragma: win32 no cover
+            return _publish_record(intent_path, _claim_record(token), self._open_mode(), _open_claim_directory)
+
+    def _publish_windows_claim(self, claim_directory: Path, name: str, token: str) -> None:  # pragma: win32 cover
+        protection = self._context.claim_protection
+        descriptors = self._context.claim_descriptors
+        assert protection is not None  # ruff:ignore[assert]  # the intent opens the directory before publishing
+        assert descriptors is not None  # ruff:ignore[assert]  # the intent initializes the descriptor registry
+        path = str(claim_directory / name)
+
+        def close_claim() -> None:
+            if (fd := descriptors.pop(path, None)) is not None:
+                os.close(fd)
+
+        protection.callback(close_claim)
+        publish_deletable_claim(
+            lambda: str(claim_directory / _private_record_name(name)),
+            path,
+            _claim_record(token),
+            descriptors,
+            self._context.claim_deadline,
+        )
+
+    def _unlink_owner_claims(self, *, acquiring: bool) -> tuple[list[str], list[BaseException]]:
+        results = [
+            (path, _unlink_owner_path_result(path, self._context, acquiring=acquiring))
+            for path in self._context.owner_claim_paths
+        ]
+        remaining = [path for path, (removed, _) in results if not removed]
+        errors = [error for _, (_, error) in results if error is not None]
+        self._context.owner_claim_paths = tuple(remaining)
+        if (not remaining or self._finalizing) and (  # pragma: win32 cover
+            protection := self._context.claim_protection
+        ) is not None:
+            self._context.claim_protection = None
+            self._context.claim_descriptors = None
+            try:
+                protection.close()
+            except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve claim cleanup failures
+                errors.append(close_error)
+        if self._finalizing:
+            # No retry runs after the finalizer and no caller sees its errors, so report success and let it close the
+            # descriptor even when claims remain.
+            return [], []  # pragma: needs collected-finalization
+        return remaining, errors
+
+    def _publish_held_claim(
+        self, claim_directory: Path, intent_name: str, held_name: str, token: str
+    ) -> BaseException | None:
+        try:
+            if sys.platform == "win32":  # pragma: win32 cover
+                self._publish_windows_claim(claim_directory, held_name, token)
+                return None
+            return _link_no_replace(claim_directory, intent_name, held_name)  # pragma: win32 no cover
+        except (NotImplementedError, OSError) as error:
+            if sys.platform == "win32" and isinstance(error, BlockingIOError):  # pragma: win32 cover
+                return None
+            raise_if_hard_links_unsupported(self.lock_file, error)
+            if isinstance(error, OSError) and error.errno == EEXIST:
+                self._context.owner_claim_paths = (str(claim_directory / intent_name),)
+            raise
+
+    def _discard_doorway(self, acquisition_error: BaseException | None = None) -> None:
+        remaining, errors = self._unlink_owner_claims(acquiring=True)
         # The pending descriptor holds no lock and a retry needs the claim paths alone. A dropped instance does not
         # retry, so close it now.
         if (fd := self._context.pending_lock_file_fd) is not None:
@@ -363,6 +434,10 @@ class StrictSoftFileLock(BaseFileLock):
                 self._close_released_fd(fd, default_suppresses=False)
             except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve claim and sentinel cleanup errors
                 errors.append(close_error)
+        if (
+            sys.platform == "win32" and errors and isinstance(acquisition_error, BaseExceptionGroup)
+        ):  # pragma: win32 cover
+            errors.insert(0, acquisition_error)
         if remaining:
             # Stay pending, not owned: is_locked reports only a held claim that passed the final rescan. The next
             # acquire retries this cleanup.
@@ -370,17 +445,6 @@ class StrictSoftFileLock(BaseFileLock):
         self._mark_descriptor_released()
         if errors:
             _raise_recorded_errors("strict doorway cleanup failed", errors)
-
-    def _unlink_owner_claims(self) -> tuple[list[str], list[BaseException]]:
-        results = [(path, _unlink_owner_path_result(path)) for path in self._context.owner_claim_paths]
-        remaining = [path for path, (removed, _) in results if not removed]
-        errors = [error for _, (_, error) in results if error is not None]
-        self._context.owner_claim_paths = tuple(remaining)
-        if self._finalizing:
-            # No retry runs after the finalizer and no caller sees its errors, so report success and let it close the
-            # descriptor even when claims remain.
-            return [], []  # pragma: needs collected-finalization
-        return remaining, errors
 
     def force_break(self, claim_name: str) -> None:
         """
@@ -424,7 +488,7 @@ class StrictSoftFileLock(BaseFileLock):
     def _release(self) -> None:
         fd = cast("int", self._context.lock_file_fd)
         self._context.claim_root = None
-        remaining, errors = self._unlink_owner_claims()
+        remaining, errors = self._unlink_owner_claims(acquiring=False)
         if remaining:
             _raise_recorded_errors("strict claim release failed", errors)
         self._mark_descriptor_released()
@@ -551,10 +615,6 @@ def _filesystem_now(directory_ref: tuple[str, int | None], public_name: str) -> 
             os.close(fd)
         with contextlib.suppress(OSError):
             _unlink_private_record_once(directory_ref, probe)
-
-
-def _private_record_name(public_name: str) -> str:
-    return f".{public_name}{_PRIVATE_RECORD_MARKER}{secrets.token_hex(_PRIVATE_RECORD_RANDOM_HEX_LENGTH // 2)}.tmp"
 
 
 def _open_relative(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
@@ -1217,6 +1277,32 @@ def _claim_name(state: StrictSoftFileClaimState, token: str) -> str:
     return f"{state}-v1-{token}.claim"
 
 
+class _PrivateRecordReclaimedError(Exception):
+    pass
+
+
+def raise_if_hard_links_unsupported(lock_file: str, error: NotImplementedError | OSError) -> None:
+    windows_hard_link_unsupported: Final[frozenset[int]] = frozenset({1, 17, 50})
+    unsupported = (
+        isinstance(error, NotImplementedError)
+        or error.errno in _HARD_LINK_UNSUPPORTED_ERRNOS
+        or (getattr(error, "winerror", None) in windows_hard_link_unsupported)
+    )
+    if unsupported:
+        reason = "filesystem does not support atomic no-replace hard-link publication"
+        raise SoftFileLockProtocolError(lock_file, None, reason) from error
+
+
+def _raise_recorded_errors(message: str, errors: list[BaseException]) -> None:
+    if len(errors) > 1:
+        raise_cleanup_errors(message, errors[0], *errors[1:])
+    raise errors[0]
+
+
+def _claim_token_key(name: str) -> str:
+    return name.removeprefix("held-").removeprefix("intent-")
+
+
 def _pin_claim_directory(directory: Path) -> contextlib.ExitStack[bool | None]:
     return pin_directories(directory.parent, directory)
 
@@ -1363,23 +1449,35 @@ def _open_claim_directory(directory: str) -> int:  # pragma: needs dir-fd
             os.close(coordination_fd)
 
 
-class _PrivateRecordReclaimedError(Exception):
-    pass
+def _private_record_name(public_name: str) -> str:
+    return f".{public_name}{_PRIVATE_RECORD_MARKER}{secrets.token_hex(_PRIVATE_RECORD_RANDOM_HEX_LENGTH // 2)}.tmp"
 
 
-def raise_if_hard_links_unsupported(lock_file: str, error: NotImplementedError | OSError) -> None:
-    windows_hard_link_unsupported: Final[frozenset[int]] = frozenset({1, 17, 50})
-    unsupported = (
-        isinstance(error, NotImplementedError)
-        or error.errno in _HARD_LINK_UNSUPPORTED_ERRNOS
-        or (getattr(error, "winerror", None) in windows_hard_link_unsupported)
-    )
-    if unsupported:
-        reason = "filesystem does not support atomic no-replace hard-link publication"
-        raise SoftFileLockProtocolError(lock_file, None, reason) from error
+def _unlink_owner_path_result(
+    path: str, context: FileLockContext, *, acquiring: bool
+) -> tuple[bool, BaseException | None]:
+    directory, name = os.path.split(path)
+    try:
+        if sys.platform == "win32":  # pragma: win32 cover
+            if context.claim_descriptors is None or (fd := context.claim_descriptors.get(path)) is None:
+                return True, None
+            return True, _unlink_in_directory(
+                Path(directory),
+                name,
+                claim_fd=fd,
+                cancel_wait=cancelling_oplock_wait(context.claim_deadline) if acquiring else None,
+            )
+        with _pin_claim_directory(claim_directory := Path(directory or os.curdir)):  # pragma: win32 no cover
+            return True, _unlink_in_directory(claim_directory, name)
+    except FileNotFoundError:
+        return True, None
+    except BaseException as error:  # ruff:ignore[blind-except]  # keep ownership when unlink did not commit
+        return False, error
 
 
-def _link_no_replace(directory: Path, source_name: str, destination_name: str) -> BaseException | None:
+def _link_no_replace(  # pragma: win32 no cover
+    directory: Path, source_name: str, destination_name: str
+) -> BaseException | None:
     if _LINK_SUPPORTS_DIR_FD:  # pragma: needs dir-fd
         directory_fd = _open_claim_directory(str(directory))
         try:
@@ -1400,28 +1498,6 @@ def _link_no_replace(directory: Path, source_name: str, destination_name: str) -
     return None  # pragma: win32 cover
 
 
-def _claim_token_key(name: str) -> str:
-    return name.removeprefix("held-").removeprefix("intent-")
-
-
-def _raise_recorded_errors(message: str, errors: list[BaseException]) -> None:
-    if len(errors) > 1:
-        raise_cleanup_errors(message, errors[0], *errors[1:])
-    raise errors[0]
-
-
-def _unlink_owner_path_result(path: str) -> tuple[bool, BaseException | None]:
-    directory, name = os.path.split(path)
-    try:
-        with _pin_claim_directory(claim_directory := Path(directory or os.curdir)):
-            cleanup_error = _unlink_in_directory(claim_directory, name)
-    except FileNotFoundError:
-        return True, None
-    except BaseException as error:  # ruff:ignore[blind-except]  # keep ownership when unlink did not commit
-        return False, error
-    return True, cleanup_error
-
-
 def _scandir_relative(
     directory_ref: tuple[str, int | None],
 ) -> contextlib.AbstractContextManager[Iterator[os.DirEntry[str]]]:
@@ -1431,7 +1507,20 @@ def _scandir_relative(
     return os.scandir(directory)  # pragma: lacks dir-fd
 
 
-def _unlink_in_directory(directory: Path, name: str) -> BaseException | None:
+def _unlink_in_directory(
+    directory: Path,
+    name: str,
+    *,
+    claim_fd: int | None = None,
+    cancel_wait: contextlib.AbstractContextManager[None] | None = None,
+) -> BaseException | None:
+    if claim_fd is not None:  # pragma: win32 cover
+        return mark_claim_for_deletion(
+            claim_fd,
+            str(directory / name),
+            lambda: str(directory / _private_record_name(name)),
+            cancel_wait=cancel_wait,
+        )
     if _UNLINK_SUPPORTS_DIR_FD:  # pragma: needs dir-fd
         directory_fd = _open_claim_directory(str(directory))
         try:

@@ -154,15 +154,24 @@ start token alongside the PID, so a live PID whose start token differs from the 
 original holder. A live PID whose token still matches, a token that cannot be read, and a marker from another host all
 read as held.
 
-**Strict soft locks** (:class:`StrictSoftFileLock <filelock.StrictSoftFileLock>`) use immutable owner claims instead of
-replacing one shared marker. Each contender writes a complete private record, publishes a unique intent through a hard
-link, and publishes a unique held claim only after it wins the intent order. The winner rescans before entering and
-keeps both its intent and its held claim for the whole hold: the intent has existed unchanged since the winner
-published it, so a contender's directory scan is guaranteed to observe it, whereas a scan racing the freshly linked held
-claim may miss it. That stable witness is what keeps two contenders from both reading themselves as the lowest claim.
-Release removes both claims by name, so it cannot detach or delete a successor at another pathname. There is no
-queue: whichever contender next finds the claim directory empty wins, so a waiter can be passed over while others
-re-acquire.
+**Strict soft locks** (:class:`StrictSoftFileLock <filelock.StrictSoftFileLock>`) publish a private record as a unique
+intent claim. The contender with the lowest intent publishes a held claim and rescans before entering. The holder keeps
+both claims until release. A scan racing publication of the held claim can miss it, but it still sees the intent, which
+keeps another contender from entering. Once the directory is empty, any contender can win.
+
+On Windows, a strict lock publishes each claim by renaming an open file. If the rename stalls, acquisition asks Windows
+to cancel it at the caller's deadline or after half a second, whichever comes first. The watchdog allows at least 10 ms
+for a system call to start. A slow SMB rename can also be canceled, even without an oplock. Repeated cancellations can
+exhaust the timeout. If cleanup also stalls, a private record remains. See :ref:`how-to:Use fail-closed soft locks`
+for the scan limits and cleanup procedure.
+
+A Windows holder keeps the coordination directories open and withdraws its claims through their original handles.
+Readers must allow delete sharing. Release waits for Windows to withdraw each claim and close its handle. A slow
+filesystem or a reader holding an oplock can delay release.
+On a volume without POSIX deletion, release renames a public claim to a private name before deleting it. A failed
+rename keeps the claim for a release retry. A subsequent private cleanup error reaches the caller after withdrawal.
+Acquisition also withdraws an interrupted publication by handle, with its watchdog still active.
+On POSIX, the contender publishes through a hard link and removes each claim by name.
 
 .. versionadded:: 3.30.0
 

@@ -56,6 +56,9 @@ _NEEDS_FD_DIRECTORY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 
 # Only NTFS refuses every open of a name whose deletion is pending while the deleting handle stays open.
 _WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+_CLAIM_LINK_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows publishes claims by renaming an open handle"
+)
 _POSIX_PRIVATE_RECLAIM: Final[pytest.MarkDecorator] = pytest.mark.skipif(
     sys.platform == "win32", reason="Windows does not reclaim private records during scans"
 )
@@ -65,7 +68,7 @@ _NEEDS_FILE_LEASE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
-    from contextlib import AbstractContextManager
+    from contextlib import AbstractContextManager, ExitStack
 
     from pytest_mock import MockerFixture, MockType
 
@@ -83,6 +86,11 @@ _UNPARSABLE_CONTENTS: Final[list[pytest.ParameterSet]] = [
 
 
 pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
+
+
+def _initialize_protocol(lock_path: Path) -> None:
+    with StrictSoftFileLock(lock_path):
+        pass
 
 
 def test_strict_soft_protocol_error_pickles() -> None:
@@ -103,6 +111,7 @@ def test_strict_soft_claims_empty_before_first_acquire(tmp_path: Path) -> None:
     assert StrictSoftFileLock(tmp_path / "resource.lock").claims == ()
 
 
+@_CLAIM_LINK_ONLY  # pragma: win32 no cover
 def test_strict_soft_intent_token_collision_does_not_claim_lock(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
@@ -124,6 +133,7 @@ def test_strict_soft_intent_token_collision_does_not_claim_lock(tmp_path: Path, 
     assert (lock.claims, lock.is_locked) == ((), False)
 
 
+@_CLAIM_LINK_ONLY  # pragma: win32 no cover
 def test_strict_soft_held_publication_failure_rolls_back_intent(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
@@ -155,6 +165,7 @@ def test_strict_soft_held_publication_failure_rolls_back_intent(tmp_path: Path, 
     assert (lock.claims, lock.is_locked) == ((), False)
 
 
+@_CLAIM_LINK_ONLY  # pragma: win32 no cover
 def test_strict_soft_held_collision_does_not_delete_foreign_claim(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
@@ -421,6 +432,7 @@ def test_strict_soft_sentinel_scan_skips_unrelated_entries(  # pragma: win32 no 
 
 
 @pytest.mark.parametrize("state", ["intent", "held"])
+@_CLAIM_LINK_ONLY  # pragma: win32 no cover
 def test_strict_soft_lost_link_reply_counts_as_committed(lock_path: Path, mocker: MockerFixture, state: str) -> None:
     real_link = os.link
 
@@ -445,6 +457,7 @@ def test_strict_soft_lost_link_reply_counts_as_committed(lock_path: Path, mocker
 
 
 @NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+@_CLAIM_LINK_ONLY  # pragma: win32 no cover
 def test_strict_soft_lost_link_reply_survives_a_peer_reaping_the_source(lock_path: Path, mocker: MockerFixture) -> None:
     real_link = os.link
 
@@ -567,6 +580,7 @@ def _reap_before_publication(lock_path: Path, token: str, mocker: MockerFixture)
     mocker.patch("filelock._strict.os.link", autospec=True, side_effect=reap_before_link)
 
 
+@_CLAIM_LINK_ONLY  # pragma: win32 no cover
 def test_strict_soft_reaper_removes_private_after_publication(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "resource.lock"
     _initialize_protocol(lock_path)
@@ -642,9 +656,18 @@ def test_strict_soft_reaper_replacement_only_aborts_publisher(tmp_path: Path, mo
     )
 
 
-def test_strict_soft_private_close_failure_removes_public_claim(tmp_path: Path, mocker: MockerFixture) -> None:
+@pytest.mark.parametrize(
+    "initialize",
+    [
+        pytest.param(lambda _lock_path: None, id="sentinel"),
+        pytest.param(_initialize_protocol, id="intent", marks=_CLAIM_LINK_ONLY),
+    ],
+)
+def test_strict_soft_private_close_failure_preserves_publication(
+    tmp_path: Path, mocker: MockerFixture, initialize: Callable[[Path], None]
+) -> None:
     lock_path = tmp_path / "resource.lock"
-    _initialize_protocol(lock_path)
+    initialize(lock_path)
     real_close = os.close
     real_open_relative = filelock._strict._open_relative
     private_fd: int | None = None
@@ -652,7 +675,7 @@ def test_strict_soft_private_close_failure_removes_public_claim(tmp_path: Path, 
     def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
         nonlocal private_fd
         fd = real_open_relative(directory_ref, name, flags, mode)
-        if flags & os.O_CREAT:  # pragma: win32 no cover  # the sentinel uses a separate opener there
+        if flags & os.O_CREAT:  # pragma: no branch  # only the private creation is relevant to this fault
             private_fd = fd
         return fd
 
@@ -662,7 +685,7 @@ def test_strict_soft_private_close_failure_removes_public_claim(tmp_path: Path, 
     def fail_private_close(fd: int) -> None:
         nonlocal private_fd
         real_close(fd)
-        if fd == private_fd:
+        if fd == private_fd:  # pragma: no branch  # only the captured descriptor closes during publication
             private_fd = None  # the cleanup that follows opens a directory under the same number
             raise OSError(EIO, "private close failed")
 
@@ -672,7 +695,7 @@ def test_strict_soft_private_close_failure_removes_public_claim(tmp_path: Path, 
 
     with pytest.raises(OSError, match="private close failed"):
         lock.acquire()
-    assert (lock.claims, lock.is_locked) == ((), False)
+    assert (lock.claims, lock.is_locked, lock_path.exists()) == ((), False, True)
 
 
 @_NEEDS_DIR_FD  # pragma: needs dir-fd
@@ -897,7 +920,7 @@ def _fail_probe_stamp(mocker: MockerFixture) -> None:  # pragma: win32 no cover
 def _fail_probe_removal(mocker: MockerFixture) -> None:  # pragma: win32 no cover
     real_unlink = os.unlink
 
-    def eio_on_probe(path: _PathValue, *, dir_fd: int | None = None) -> None:
+    def eio_on_probe(path: _PathValue, *, dir_fd: int | None = None) -> None:  # pragma: win32 no cover
         if Path(os.fsdecode(path)).name.startswith(".held-v1-"):
             raise OSError(EIO, "probe unlink failed")
         real_unlink(path, dir_fd=dir_fd)
@@ -1121,12 +1144,12 @@ def _race_sentinel_publication(lock_path: Path, mocker: MockerFixture, sentinel:
         dst_dir_fd: int | None = None,
         follow_symlinks: bool = True,
     ) -> None:
-        nonlocal raced
+        nonlocal raced  # pragma: no cover  # the declaration has no runtime opcode
         if not raced:
             raced = True
             lock_path.write_bytes(sentinel)
             raise FileExistsError(EEXIST, "sentinel exists")
-        real_link(
+        real_link(  # pragma: win32 no cover
             source,
             destination,
             src_dir_fd=src_dir_fd,
@@ -1251,14 +1274,15 @@ def test_strict_soft_unreadable_lock_path_blocks(tmp_path: Path, mocker: MockerF
     assert lock.lock_path_occupant == "a file it cannot read (sharing violation)"
 
 
-def _route_record_opens_through_os_open(mocker: MockerFixture) -> None:
+def _route_record_opens_through_os_open(mocker: MockerFixture, *, claims: bool = True) -> None:
     # Windows uses NtCreateFile for claims and the sentinel, which an os.open fault would miss.
     if sys.platform == "win32":  # pragma: win32 cover
-        mocker.patch(
-            "filelock._strict.open_deletable_for_reading",
-            side_effect=lambda path: os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)),
-            autospec=True,
-        )
+        if claims:
+            mocker.patch(
+                "filelock._strict.open_deletable_for_reading",
+                side_effect=lambda path: os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)),
+                autospec=True,
+            )
         mocker.patch(
             "filelock._strict.open_read_without_oplock_wait",
             side_effect=lambda path, **_: os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)),
@@ -1277,7 +1301,7 @@ def test_strict_soft_answers_a_sentinel_break(lock_path: Path, mocker: MockerFix
             raise BlockingIOError(EWOULDBLOCK, "break in progress")
         return real_open(path, flags, mode, dir_fd=dir_fd)
 
-    _route_record_opens_through_os_open(mocker)
+    _route_record_opens_through_os_open(mocker, claims=False)
     mocker.patch("filelock._strict.os.open", autospec=True, side_effect=answer_after_one_open)
 
     with StrictSoftFileLock(lock_path, timeout=0) as lock:
@@ -1398,6 +1422,9 @@ def test_strict_soft_sentinel_removed_after_publication_backs_off(tmp_path: Path
     assert (lock.is_locked, lock_path.exists()) == (False, False)
 
 
+@pytest.mark.skipif(  # pragma: win32 no cover
+    sys.platform == "win32", reason="the test routes claim reads through os.open without delete sharing"
+)
 def test_strict_soft_sentinel_vanishing_before_open_is_republished(lock_path: Path, mocker: MockerFixture) -> None:
     real_open = os.open
     vanished = False
@@ -2113,6 +2140,9 @@ def test_strict_soft_refuses_ownership_when_overflow_uid_is_unknown(  # pragma: 
     assert list(coordination.iterdir()) == []
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows pins the coordination directory throughout a hold"
+)  # pragma: win32 no cover
 def test_strict_soft_coordination_directory_replaced_in_a_writable_parent_splits_holders(tmp_path: Path) -> None:
     # The documented directory boundary: a process that can rename entries in a non-sticky parent can move even this
     # account's own protocol directory aside and start a fresh one, which the lock cannot tell from a first use.
@@ -2135,11 +2165,6 @@ def abandoned_record(lock_path: Path) -> tuple[Path, Path]:
     (private_path := _private_claim_path(lock_path, "0" * 32)).write_bytes(b"abandoned")
     os.utime(private_path, (0, 0))
     return lock_path, private_path
-
-
-def _initialize_protocol(lock_path: Path) -> None:
-    with StrictSoftFileLock(lock_path):
-        pass
 
 
 def _private_claim_path(lock_path: Path, token: str) -> Path:
@@ -2325,7 +2350,7 @@ def test_strict_soft_discard_sentinel_close_failure(tmp_path: Path, mocker: Mock
     "initialize",
     [
         pytest.param(lambda _lock_path: None, id="sentinel"),
-        pytest.param(_initialize_protocol, id="intent"),
+        pytest.param(_initialize_protocol, id="intent", marks=_CLAIM_LINK_ONLY),
     ],
 )
 def test_strict_soft_publication_record_replaced_aborts(
@@ -2349,9 +2374,18 @@ def test_strict_soft_publication_record_replaced_aborts(
     assert lock.is_locked is False
 
 
-def test_strict_soft_publication_record_reclaimed_aborts(tmp_path: Path, mocker: MockerFixture) -> None:
+@pytest.mark.parametrize(
+    "initialize",
+    [
+        pytest.param(lambda _lock_path: None, id="sentinel"),
+        pytest.param(_initialize_protocol, id="intent", marks=_CLAIM_LINK_ONLY),
+    ],
+)
+def test_strict_soft_publication_record_reclaimed_aborts(
+    tmp_path: Path, mocker: MockerFixture, initialize: Callable[[Path], None]
+) -> None:
     lock_path = tmp_path / "resource.lock"
-    _initialize_protocol(lock_path)
+    initialize(lock_path)
     real_identity = _relative_identity
 
     def source_gone(directory_ref: tuple[str, int | None], name: str) -> tuple[int, int] | None:
@@ -2371,9 +2405,18 @@ def test_strict_soft_publication_record_reclaimed_aborts(tmp_path: Path, mocker:
     assert lock.is_locked is False
 
 
-def test_strict_soft_private_inspection_failure_unlinks_vanished_record(tmp_path: Path, mocker: MockerFixture) -> None:
+@pytest.mark.parametrize(
+    "initialize",
+    [
+        pytest.param(lambda _lock_path: None, id="sentinel"),
+        pytest.param(_initialize_protocol, id="intent", marks=_CLAIM_LINK_ONLY),
+    ],
+)
+def test_strict_soft_private_inspection_failure_unlinks_vanished_record(
+    tmp_path: Path, mocker: MockerFixture, initialize: Callable[[Path], None]
+) -> None:
     lock_path = tmp_path / "resource.lock"
-    _initialize_protocol(lock_path)
+    initialize(lock_path)
     real_fstat = os.fstat
     real_open_relative = filelock._strict._open_relative
     private_fd: int | None = None
@@ -2381,7 +2424,7 @@ def test_strict_soft_private_inspection_failure_unlinks_vanished_record(tmp_path
     def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
         nonlocal private_fd
         fd = real_open_relative(directory_ref, name, flags, mode)
-        if flags & os.O_CREAT:  # pragma: win32 no cover  # the sentinel uses a separate opener there
+        if flags & os.O_CREAT:  # pragma: no branch  # only the private creation is relevant to this fault
             private_fd = fd
         return fd
 
@@ -2402,9 +2445,18 @@ def test_strict_soft_private_inspection_failure_unlinks_vanished_record(tmp_path
     assert lock.is_locked is False
 
 
-def test_strict_soft_private_record_reclaimed_after_close_is_tolerated(tmp_path: Path, mocker: MockerFixture) -> None:
+@pytest.mark.parametrize(
+    "initialize",
+    [
+        pytest.param(lambda _lock_path: None, id="sentinel"),
+        pytest.param(_initialize_protocol, id="intent", marks=_CLAIM_LINK_ONLY),
+    ],
+)
+def test_strict_soft_private_record_reclaimed_after_close_is_tolerated(
+    tmp_path: Path, mocker: MockerFixture, initialize: Callable[[Path], None]
+) -> None:
     lock_path = tmp_path / "resource.lock"
-    _initialize_protocol(lock_path)
+    initialize(lock_path)
     real_close = os.close
     real_open_relative = filelock._strict._open_relative
     private_records: dict[int, Path] = {}
@@ -2412,7 +2464,7 @@ def test_strict_soft_private_record_reclaimed_after_close_is_tolerated(tmp_path:
 
     def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
         fd = real_open_relative(directory_ref, name, flags, mode)
-        if flags & os.O_CREAT:  # pragma: win32 no cover  # the sentinel uses a separate opener there
+        if flags & os.O_CREAT:  # pragma: no branch  # only private records should be reclaimed
             private_records[fd] = Path(directory_ref[0], name)
         return fd
 
@@ -2434,9 +2486,18 @@ def test_strict_soft_private_record_reclaimed_after_close_is_tolerated(tmp_path:
     assert reclaimed > 0
 
 
-def test_strict_soft_record_finalization_close_and_unlink_failures_group(tmp_path: Path, mocker: MockerFixture) -> None:
+@pytest.mark.parametrize(
+    "initialize",
+    [
+        pytest.param(lambda _lock_path: None, id="sentinel"),
+        pytest.param(_initialize_protocol, id="intent", marks=_CLAIM_LINK_ONLY),
+    ],
+)
+def test_strict_soft_record_finalization_close_and_unlink_failures_group(
+    tmp_path: Path, mocker: MockerFixture, initialize: Callable[[Path], None]
+) -> None:
     lock_path = tmp_path / "resource.lock"
-    _initialize_protocol(lock_path)
+    initialize(lock_path)
     real_close = os.close
     real_open_relative = filelock._strict._open_relative
     private_fd: int | None = None
@@ -2444,14 +2505,14 @@ def test_strict_soft_record_finalization_close_and_unlink_failures_group(tmp_pat
     def capture_private_record(directory_ref: tuple[str, int | None], name: str, flags: int, mode: int) -> int:
         nonlocal private_fd
         fd = real_open_relative(directory_ref, name, flags, mode)
-        if flags & os.O_CREAT:  # pragma: win32 no cover  # the sentinel uses a separate opener there
+        if flags & os.O_CREAT:  # pragma: no branch  # only the private creation is relevant to this fault
             private_fd = fd
         return fd
 
     def fail_private_close(fd: int) -> None:
         nonlocal private_fd
         real_close(fd)
-        if fd == private_fd:
+        if fd == private_fd:  # pragma: no branch  # only the captured descriptor closes during publication
             private_fd = None  # the cleanup that follows opens a directory under the same number
             raise OSError(EIO, "private close failed")
 
@@ -2515,13 +2576,16 @@ def test_strict_soft_doorway_claim_unlink_failure_stays_pending(tmp_path: Path, 
 
     real_unlink_in_directory = filelock._strict._unlink_in_directory
 
-    def deny_only_the_owned_intent_unlink(directory: Path, name: str) -> BaseException | None:
-        # Fail only the doorway's own intent-claim unlink. A blanket failure also breaks the Windows-only private
-        # record cleanup inside publication (_unlink_relative unlinks a differently named private file there), firing
-        # the fault before the doorway ever discards and masking the commit-owned path this test targets.
+    def deny_only_the_owned_intent_unlink(
+        directory: Path,
+        name: str,
+        *,
+        claim_fd: int | None = None,
+        cancel_wait: AbstractContextManager[None] | None = None,
+    ) -> BaseException | None:
         if name == intent_name:
             raise PermissionError(EACCES, "intent unlink denied")
-        return real_unlink_in_directory(directory, name)  # pragma: lacks dir-fd
+        return real_unlink_in_directory(directory, name, claim_fd=claim_fd, cancel_wait=cancel_wait)
 
     mocker.patch("filelock._strict.secrets.token_hex", return_value=owner_token, autospec=True)
     scandir_mock = mocker.patch(
@@ -2535,6 +2599,9 @@ def test_strict_soft_doorway_claim_unlink_failure_stays_pending(tmp_path: Path, 
     with pytest.raises(PermissionError, match="intent unlink denied"):
         lock.acquire()
     assert (lock.is_locked, sorted(claim.name for claim in lock.claims)) == (False, [competitor_name, intent_name])
+    other = _write_foreign_claim(Path(f"{lock_path}.filelock") / "claims", "1" * 32)
+    lock.force_break(other.name)
+    assert not other.exists()
     # The leftover intent is a pending cleanup, not a hold: retrying acquires nothing while the competitor holds.
     with pytest.raises(PermissionError, match="intent unlink denied"):
         lock.acquire(timeout=0)
@@ -2677,16 +2744,40 @@ def _leave_pending_doorway(
 def _fail_the_doorway(mocker: MockerFixture) -> None:
     real_unlink_in_directory = filelock._strict._unlink_in_directory
 
-    def deny_intent_unlink(directory: Path, name: str) -> BaseException | None:
+    def deny_intent_unlink(
+        directory: Path,
+        name: str,
+        *,
+        claim_fd: int | None = None,
+        cancel_wait: AbstractContextManager[None] | None = None,
+    ) -> BaseException | None:
         if name.startswith("intent-"):
             raise PermissionError(EACCES, "intent unlink denied")
-        return real_unlink_in_directory(directory, name)
+        return real_unlink_in_directory(  # pragma: win32 no cover
+            directory, name, claim_fd=claim_fd, cancel_wait=cancel_wait
+        )
 
     def fail_held_link(_directory: Path, _source: str, _destination: str) -> NoReturn:
         # Raise a fresh error each call: a shared side_effect instance would keep its traceback, and with it the lock.
         raise OSError(EIO, "held link failed")
 
-    mocker.patch("filelock._strict._link_no_replace", autospec=True, side_effect=fail_held_link)
+    if sys.platform == "win32":  # pragma: win32 cover
+        real_publish = filelock._strict.publish_deletable_claim
+
+        def fail_held_publish(
+            private_path: Callable[[], str],
+            public_path: str,
+            record: bytes,
+            descriptors: dict[str, int],
+            deadline: float | None,
+        ) -> int:
+            if Path(public_path).name.startswith("held-"):
+                raise OSError(EIO, "held link failed")
+            return real_publish(private_path, public_path, record, descriptors, deadline)
+
+        mocker.patch("filelock._strict.publish_deletable_claim", autospec=True, side_effect=fail_held_publish)
+    else:  # pragma: win32 no cover
+        mocker.patch("filelock._strict._link_no_replace", autospec=True, side_effect=fail_held_link)
     mocker.patch("filelock._strict._unlink_in_directory", autospec=True, side_effect=deny_intent_unlink)
 
 
@@ -2834,6 +2925,450 @@ def test_strict_soft_owner_releases_while_a_contender_reads_its_claim(lock_path:
     assert (holder.is_locked, StrictSoftFileLock(lock_path).claims) == (False, ())
 
 
+def _mock_legacy_volume(mocker: MockerFixture, failure: str | None = None) -> None:  # pragma: win32 cover
+    assert sys.platform == "win32"
+    import ctypes
+
+    from filelock import _windows
+
+    set_disposition = _windows._set_delete_disposition
+
+    def legacy_disposition(handle: int, *, published: bool = False) -> bool:
+        if published:
+            ctypes.set_last_error(50)  # ERROR_NOT_SUPPORTED
+            return False
+        if failure == "private-cleanup":
+            raise OSError(EIO, failure)
+        return set_disposition(handle)
+
+    mocker.patch.object(_windows, "_set_delete_disposition", side_effect=legacy_disposition, autospec=True)
+    if failure == "rename":
+        mocker.patch.object(_windows, "_rename_open_claim", side_effect=OSError(EIO, failure), autospec=True)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.parametrize(
+    "prepare",
+    [pytest.param(lambda _: None, id="posix-disposition"), pytest.param(_mock_legacy_volume, id="legacy-volume")],
+)
+def test_strict_soft_release_with_a_shared_reader_removes_claims(
+    lock_path: Path, mocker: MockerFixture, prepare: Callable[[MockerFixture], None]
+) -> None:
+    assert sys.platform == "win32"
+    from filelock import _windows
+
+    prepare(mocker)
+    lock = StrictSoftFileLock(lock_path, timeout=0)
+    lock.acquire()
+    claims = Path(f"{lock_path}.filelock") / "claims"
+    with os.fdopen(_windows.open_read_without_oplock_wait(str(next(claims.glob("held-*.claim")))), "rb") as reader:
+        lock.release()
+        names = [path.name for path in claims.glob("*.claim")]
+        with StrictSoftFileLock(lock_path, timeout=0) as successor:
+            assert (names, successor.is_locked, bool(reader.read())) == ([], True, True)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.parametrize(
+    ("prepare", "operation"),
+    [
+        pytest.param(lambda _: None, "_set_delete_disposition", id="posix-disposition"),
+        pytest.param(_mock_legacy_volume, "_rename_open_claim", id="legacy-rename"),
+    ],
+)
+def test_strict_soft_release_waits_for_windows_io(
+    lock_path: Path, mocker: MockerFixture, prepare: Callable[[MockerFixture], None], operation: str
+) -> None:
+    assert sys.platform == "win32"
+    from filelock import _windows
+
+    lock = StrictSoftFileLock(lock_path, timeout=0)
+    lock.acquire()
+    prepare(mocker)
+    original = getattr(_windows, operation)
+    reader, writer = os.pipe()
+
+    def wait_for_peer(handle: int, *names: str, **options: bool) -> bool | None:
+        mocker.stop(pause)
+        # An empty pipe exercises the same synchronous I/O cancellation as a slow filesystem operation.
+        peer = threading.Timer(0.8, os.write, args=(writer, b"x"))
+        peer.start()
+        try:
+            assert os.read(reader, 1) == b"x"
+        finally:
+            peer.join()
+        return original(handle, *names, **options)
+
+    pause = mocker.patch.object(_windows, operation, side_effect=wait_for_peer, autospec=True)
+    try:
+        lock.release()
+    finally:
+        os.close(writer)
+        os.close(reader)
+    assert pause.called
+    assert (lock.is_locked, lock.claims) == (False, ())
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.parametrize(
+    ("failure", "held", "claim_count"),
+    [
+        pytest.param("rename", True, 2, id="before-withdrawal"),
+        pytest.param("private-cleanup", False, 0, id="after-withdrawal"),
+    ],
+)
+def test_strict_soft_windows_legacy_release_reports_errors(
+    lock_path: Path, mocker: MockerFixture, failure: str, *, held: bool, claim_count: int
+) -> None:
+    lock = StrictSoftFileLock(lock_path, timeout=0)
+    lock.acquire()
+    _mock_legacy_volume(mocker, failure)
+
+    with pytest.raises(ExceptionGroup) as caught:
+        lock.release()
+    assert len(caught.value.exceptions) == 2
+    assert all(isinstance(error, OSError) and error.strerror == failure for error in caught.value.exceptions)
+    assert (lock.is_locked, len(lock.claims)) == (held, claim_count)
+    mocker.stopall()
+    lock.release()
+    with lock:
+        assert lock.is_locked
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.parametrize(
+    ("target", "share", "flags"),
+    [
+        pytest.param(lambda claims: claims.parent, 0, 0x02000000, id="directory"),
+        pytest.param(lambda claims: next(claims.glob("held-*.claim")), 0x1 | 0x2, 0, id="claim"),
+    ],
+)
+def test_strict_soft_rejects_readers_that_would_block_release(
+    lock_path: Path, target: Callable[[Path], Path], share: int, flags: int
+) -> None:
+    assert sys.platform == "win32"
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    with StrictSoftFileLock(lock_path) as lock:
+        claims = Path(f"{lock_path}.filelock") / "claims"
+        handle = kernel32.CreateFileW(str(target(claims)), 0x80000000, share, None, 3, flags, None)
+        assert (handle, ctypes.get_last_error()) == (ctypes.c_void_p(-1).value, 32)
+
+    assert lock.claims == ()
+    with StrictSoftFileLock(lock_path, timeout=0) as successor:
+        assert successor.is_locked
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.parametrize(
+    ("state", "error_type"),
+    [pytest.param("intent", Timeout, id="intent"), pytest.param("held", FileExistsError, id="held")],
+)
+def test_strict_soft_windows_claim_collision_keeps_peer(
+    lock_path: Path, mocker: MockerFixture, state: str, error_type: type[Exception]
+) -> None:
+    assert sys.platform == "win32"
+    token = "f" * 32
+    real_publish = filelock._strict.publish_deletable_claim
+    claims = Path(f"{lock_path}.filelock") / "claims"
+
+    def collide(
+        private_path: Callable[[], str],
+        public_path: str,
+        record: bytes,
+        descriptors: dict[str, int],
+        deadline: float | None,
+    ) -> int:
+        if Path(public_path).name.startswith(f"{state}-"):
+            _write_foreign_claim(claims, token, state)
+            raise FileExistsError(EEXIST, "peer claim exists")
+        return real_publish(private_path, public_path, record, descriptors, deadline)
+
+    mocker.patch("filelock._strict.secrets.token_hex", return_value=token, autospec=True)
+    mocker.patch("filelock._strict.publish_deletable_claim", side_effect=collide, autospec=True)
+    lock = StrictSoftFileLock(lock_path, timeout=0)
+    with pytest.raises(error_type):
+        lock.acquire()
+    assert ([(claim.state, claim.start) for claim in lock.claims], lock.is_locked) == ([(state, 4242)], False)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_strict_soft_windows_coordination_directory_stays_in_place(lock_path: Path) -> None:
+    assert sys.platform == "win32"
+    coordination = Path(f"{lock_path}.filelock")
+    with StrictSoftFileLock(lock_path), pytest.raises(PermissionError):
+        coordination.rename(lock_path.parent / "aside")
+    coordination.rename(lock_path.parent / "aside")
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_strict_soft_windows_failed_claim_publication_removes_private(tmp_path: Path) -> None:
+    assert sys.platform == "win32"
+    from filelock._windows import publish_deletable_claim
+
+    private = tmp_path / "private.claim"
+    public = tmp_path / "public.claim"
+    public.write_bytes(b"peer")
+
+    with pytest.raises(FileExistsError):
+        publish_deletable_claim(lambda: str(private), str(public), b"owner", {})
+
+    assert (private.exists(), public.read_bytes()) == (False, b"peer")
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_strict_soft_windows_private_name_collision_preserves_peer(tmp_path: Path) -> None:
+    assert sys.platform == "win32"
+    from filelock._windows import publish_deletable_claim
+
+    private = tmp_path / "private.claim"
+    private.write_bytes(b"peer")
+
+    with pytest.raises(FileExistsError):
+        publish_deletable_claim(lambda: str(private), str(tmp_path / "public.claim"), b"owner", {})
+
+    assert private.read_bytes() == b"peer"
+
+
+def test_strict_soft_scan_tolerates_disappearing_private_record(lock_path: Path, mocker: MockerFixture) -> None:
+    _initialize_protocol(lock_path)
+    private = Path(f"{lock_path}.filelock") / "claims" / f".held-v1-{'1' * 32}.claim.private-v1-{'2' * 32}.tmp"
+    private.write_bytes(b"unpublished")
+    reclaim = filelock._strict._reclaim_private_record
+
+    def remove_before_inspection(
+        directory_ref: tuple[str, int | None], name: str, now: Callable[[], float | None]
+    ) -> None:
+        assert name == private.name
+        private.unlink()
+        reclaim(directory_ref, name, now)
+
+    mocker.patch("filelock._strict._reclaim_private_record", side_effect=remove_before_inspection, autospec=True)
+    with StrictSoftFileLock(lock_path, blocking=False) as lock:
+        assert lock.is_locked
+    assert not private.exists()
+
+
+def test_strict_soft_release_accepts_a_claim_already_removed(lock_path: Path, mocker: MockerFixture) -> None:
+    lock = StrictSoftFileLock(lock_path, timeout=0)
+    lock.acquire()
+    unlink = filelock._strict._unlink_in_directory
+
+    def removed(
+        directory: Path,
+        name: str,
+        *,
+        claim_fd: int | None = None,
+        cancel_wait: AbstractContextManager[None] | None = None,
+    ) -> NoReturn:
+        unlink(directory, name, claim_fd=claim_fd, cancel_wait=cancel_wait)
+        raise FileNotFoundError(ENOENT, "claim gone")
+
+    removal = mocker.patch("filelock._strict._unlink_in_directory", side_effect=removed, autospec=True)
+    lock.release()
+    mocker.stop(removal)
+    assert (lock.is_locked, lock.claims) == (False, ())
+    with lock:
+        assert lock.is_locked
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_strict_soft_windows_pin_failure_leaves_no_pending_cleanup(lock_path: Path, mocker: MockerFixture) -> None:
+    assert sys.platform == "win32"
+    _initialize_protocol(lock_path)
+    lock = StrictSoftFileLock(lock_path, blocking=False)
+    pin = filelock._strict._pin_claim_directory
+    denials = iter((PermissionError(EACCES, "cannot pin"), OSError(EIO, "unexpected cleanup open")))
+
+    def refuse_owner_pin(directory: Path) -> ExitStack[bool | None]:
+        if lock._context.owner_claim_paths:
+            raise next(denials)
+        return pin(directory)
+
+    failure = mocker.patch("filelock._strict._pin_claim_directory", side_effect=refuse_owner_pin, autospec=True)
+    with pytest.raises(PermissionError, match="cannot pin"):
+        lock.acquire()
+    mocker.stop(failure)
+    with lock:
+        assert lock.is_locked
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_strict_soft_windows_failed_private_cleanup_reports_both_errors(tmp_path: Path, mocker: MockerFixture) -> None:
+    assert sys.platform == "win32"
+    from filelock import _windows
+
+    private, public = tmp_path / "private", tmp_path / "public"
+    public.write_bytes(b"peer")
+    cleanup_error = OSError(EIO, "could not remove private record")
+    failure = mocker.patch.object(_windows, "mark_claim_for_deletion", side_effect=cleanup_error, autospec=True)
+    descriptors: dict[str, int] = {}
+
+    with pytest.raises(ExceptionGroup, match="strict publication cleanup failed") as caught:
+        _windows.publish_deletable_claim(lambda: str(private), str(public), b"owner", descriptors)
+
+    publication, cleanup = caught.value.exceptions
+    assert isinstance(publication, FileExistsError)
+    assert cleanup is cleanup_error
+    mocker.stop(failure)
+    fd = descriptors.pop(str(public))
+    try:
+        _windows.mark_claim_for_deletion(fd, str(private))
+    finally:
+        os.close(fd)
+    assert (private.exists(), public.read_bytes()) == (False, b"peer")
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.parametrize(
+    ("prepare", "error_type", "message"),
+    [
+        pytest.param(lambda _: None, OSError, "could not confirm rename", id="ntfs"),
+        pytest.param(_mock_legacy_volume, OSError, "could not confirm rename", id="legacy"),
+        pytest.param(
+            lambda mocker: _mock_legacy_volume(mocker, "private-cleanup"),
+            ExceptionGroup,
+            "strict doorway cleanup failed",
+            id="legacy-cleanup-error",
+        ),
+    ],
+)
+def test_strict_soft_windows_interrupted_rename_with_a_shared_reader(
+    lock_path: Path,
+    mocker: MockerFixture,
+    prepare: Callable[[MockerFixture], None],
+    error_type: type[Exception],
+    message: str,
+    request: pytest.FixtureRequest,
+) -> None:
+    assert sys.platform == "win32"
+    from filelock import _windows
+
+    lock = StrictSoftFileLock(lock_path, timeout=0)
+    claims = Path(f"{lock_path}.filelock") / "claims"
+    rename = _windows._rename_open_claim
+    interruption = OSError(EIO, "could not confirm rename")
+
+    def interrupt(fd: int, path: str) -> None:
+        rename(fd, path)
+        if Path(path).name.startswith("intent-"):
+            request.addfinalizer(functools.partial(os.close, _windows.open_read_without_oplock_wait(path)))
+            raise interruption
+
+    prepare(mocker)
+    mocker.patch.object(_windows, "_rename_open_claim", side_effect=interrupt, autospec=True)
+    with pytest.raises(error_type, match=message):
+        lock.acquire()
+    assert list(claims.glob("*.claim")) == []
+    mocker.stopall()
+    with StrictSoftFileLock(lock_path, timeout=0) as successor:
+        assert successor.is_locked
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_strict_soft_windows_retries_an_interrupted_rename(lock_path: Path, mocker: MockerFixture) -> None:
+    assert sys.platform == "win32"
+    import ctypes
+
+    from filelock import _windows
+
+    lock = StrictSoftFileLock(lock_path, timeout=0)
+    rename = _windows._rename_open_claim
+    interruption = OSError(EIO, "could not confirm rename")
+
+    def interrupt(fd: int, public_path: str) -> NoReturn:
+        rename(fd, public_path)
+        raise interruption
+
+    def deny_delete(_handle: int, *, published: bool) -> bool:
+        ctypes.set_last_error(5 if published else 32)  # ERROR_ACCESS_DENIED or ERROR_SHARING_VIOLATION
+        return False
+
+    mocker.patch.object(_windows, "_rename_open_claim", side_effect=interrupt, autospec=True)
+    mocker.patch.object(_windows, "_set_delete_disposition", side_effect=deny_delete, autospec=True)
+    with pytest.raises(ExceptionGroup, match="strict doorway claim cleanup failed") as caught:
+        lock.acquire()
+    publication, rollback = caught.value.exceptions
+    assert isinstance(rollback, PermissionError)
+    assert isinstance(publication, ExceptionGroup)
+    assert publication.exceptions[0] is interruption
+    assert isinstance(publication.exceptions[1], PermissionError)
+    mocker.stopall()
+    with lock.acquire(timeout=0):
+        assert lock.is_locked
+    assert lock.claims == ()
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_strict_soft_windows_interrupted_publication_removes_claim(lock_path: Path, mocker: MockerFixture) -> None:
+    assert sys.platform == "win32"
+    publish = filelock._strict.publish_deletable_claim
+
+    def interrupt(
+        private_path: Callable[[], str],
+        public_path: str,
+        record: bytes,
+        descriptors: dict[str, int],
+        deadline: float | None,
+    ) -> NoReturn:
+        publish(private_path, public_path, record, descriptors, deadline)
+        raise KeyboardInterrupt
+
+    lock = StrictSoftFileLock(lock_path, timeout=0)
+    interruption = mocker.patch("filelock._strict.publish_deletable_claim", side_effect=interrupt, autospec=True)
+    with pytest.raises(KeyboardInterrupt):
+        lock.acquire()
+    mocker.stop(interruption)
+    assert lock.claims == ()
+    with lock:
+        assert lock.is_locked
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_strict_soft_windows_reclaimed_private_claim_closes_handle(tmp_path: Path, mocker: MockerFixture) -> None:
+    assert sys.platform == "win32"
+    from filelock import _windows
+
+    private = tmp_path / "private.claim"
+    public = tmp_path / "public.claim"
+
+    def reclaim_then_fail(_fd: int, _path: str) -> None:
+        private.unlink()
+        raise OSError(EIO, "claim publication failed")
+
+    rename = mocker.patch("filelock._windows._rename_open_claim", side_effect=reclaim_then_fail, autospec=True)
+    with pytest.raises(OSError, match="claim publication failed"):
+        _windows.publish_deletable_claim(lambda: str(private), str(public), b"first", {})
+    mocker.stop(rename)
+
+    os.close(_windows.publish_deletable_claim(lambda: str(private), str(public), b"second", {}))
+    assert public.read_bytes() == b"second"
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+def test_strict_soft_windows_collision_reports_pin_close_error(lock_path: Path, mocker: MockerFixture) -> None:
+    assert sys.platform == "win32"
+    lock = StrictSoftFileLock(lock_path, timeout=0)
+
+    def fail_close() -> None:
+        raise OSError(EIO, "pin close failed")
+
+    def collide(
+        _private: Callable[[], str], _public: str, _record: bytes, _descriptors: dict[str, int], _deadline: float | None
+    ) -> NoReturn:
+        protection = lock._context.claim_protection
+        assert protection is not None
+        protection.callback(fail_close)  # inject cleanup fault
+        raise FileExistsError(EEXIST, "peer claim exists")
+
+    mocker.patch("filelock._strict.publish_deletable_claim", side_effect=collide, autospec=True)
+    with pytest.raises(OSError, match="pin close failed"):
+        lock.acquire()
+    assert lock.is_locked is False
+
+
 @_WINDOWS_ONLY  # pragma: win32 cover
 @pytest.mark.parametrize(
     ("operation", "match"),
@@ -2865,6 +3400,7 @@ def test_strict_soft_coordination_directory_swapped_for_a_junction_leaves_target
     lock_path: Final[Path] = tmp_path / "resource.lock"
     (coordination := Path(f"{lock_path}.filelock")).mkdir()
     (target := tmp_path / "target").mkdir()
+    original_target = target.stat()
     swapped: list[bool] = []
 
     def swap_after_the_inspection(inspect: _Inspect) -> _Inspect:
@@ -2892,6 +3428,7 @@ def test_strict_soft_coordination_directory_swapped_for_a_junction_leaves_target
         StrictSoftFileLock(lock_path, timeout=0).acquire()
     assert coordination.samefile(target)
     assert list(target.iterdir()) == []
+    assert os.path.samestat(original_target, target.stat())
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover
@@ -3073,9 +3610,10 @@ def test_strict_soft_opened_record_non_regular_fails_closed(tmp_path: Path, mock
 
 
 @_WINDOWS_ONLY  # pragma: win32 cover
-def test_strict_soft_release_rides_out_a_transient_unlink_denial(lock_path: Path, mocker: MockerFixture) -> None:
-    # Another process can hold a claim open for a moment after its owner finished with it, so the release retries once.
-    (lock := StrictSoftFileLock(lock_path)).acquire()
+def test_strict_soft_force_break_retries_a_transient_unlink_denial(lock_path: Path, mocker: MockerFixture) -> None:
+    lock = StrictSoftFileLock(lock_path)
+    lock.acquire()
+    claim = lock.claims[0].name
     real_unlink = os.unlink
     denied: list[str] = []
 
@@ -3088,6 +3626,7 @@ def test_strict_soft_release_rides_out_a_transient_unlink_denial(lock_path: Path
     mocker.patch("filelock._strict.os.unlink", side_effect=deny_once, autospec=True)
     sleep = mocker.create_autospec(time.sleep)
     _patch_strict_clock(mocker, sleep=sleep)
+    lock.force_break(claim)
     lock.release()
 
     assert (len(denied), sleep.call_args_list, lock.claims) == (1, [mocker.call(0.001)], ())
