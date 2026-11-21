@@ -10,8 +10,8 @@ import sys
 import textwrap
 import threading
 import time
-from contextlib import contextmanager, suppress
-from errno import EACCES, EINTR, EINVAL, EIO, ENODEV, ENOSPC, EPERM
+from contextlib import ExitStack, contextmanager, suppress
+from errno import EACCES, EBADF, EINTR, EINVAL, EIO, ENODEV, ENOSPC, EPERM
 from functools import partial
 from multiprocessing import get_context
 from pathlib import Path
@@ -26,7 +26,7 @@ from filelock._api import FileLockContext
 from filelock._identity import host_name, process_start_token
 from filelock._soft import _MAX_LOCK_FILE_SIZE, MALFORMED_LOCK_AGE_THRESHOLD, _begin_claim, _end_claim, read_lock_file
 from filelock._soft_protocol import STRICT_SOFT_SENTINEL_RECORD
-from filelock._util import exchange_names
+from filelock._util import exchange_names, pin_inode
 from tests.capability_marks import (
     NEEDS_FIFO,
     NEEDS_FOREIGN_STICKY_TMP,
@@ -1805,6 +1805,32 @@ def _interrupted_once(created: Callable[[], bool], operation: Callable[[], objec
         operation()
     finally:
         sys.setprofile(None)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="only POSIX opens an inode pin")
+@pytest.mark.parametrize(
+    "inspect",
+    [
+        pytest.param(lambda path, _cleanup: read_lock_file(path), id="read"),
+        pytest.param(lambda path, cleanup: cleanup.enter_context(pin_inode(path)), id="pin"),
+    ],
+)
+def test_interrupted_marker_inspection_closes_its_descriptor(
+    lock_path: Path, inspect: Callable[[str, ExitStack], object]
+) -> None:  # pragma: win32 no cover
+    lock_path.touch()
+    fd = os.open(lock_path, os.O_RDONLY)
+    os.close(fd)
+
+    def inspecting() -> bool:  # pragma: no cover  # the profiler calls this with tracing disabled
+        with suppress(OSError):
+            return os.path.samestat(os.fstat(fd), lock_path.stat())
+        return False
+
+    with ExitStack() as cleanup, pytest.raises(KeyboardInterrupt):
+        _interrupted_once(inspecting, partial(inspect, str(lock_path), cleanup))
+    with pytest.raises(OSError, check=lambda error: error.errno == EBADF):
+        os.fstat(fd)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot exchange two names")

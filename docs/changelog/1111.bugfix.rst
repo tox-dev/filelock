@@ -1,0 +1,1 @@
+On POSIX, interrupting a soft lock while it opens an existing marker for inspection now closes the descriptor.

@@ -650,18 +650,21 @@ def read_lock_file(path: str) -> tuple[str | None, os.stat_result]:
     # Re-check on the opened handle: O_NOFOLLOW refuses a symlink swapped in after the lstat, O_NONBLOCK stops a FIFO
     # swapped in from stalling the open, and the fstat catches any other non-regular replacement race before we read.
     # The capped read stops a huge regular file (e.g. one filled from /dev/zero) from exhausting memory.
-    if sys.platform == "win32":  # pragma: win32 cover
-        # os.open would wait for an oplock holder to answer its break, past the caller's deadline.
-        fd = open_read_without_oplock_wait(path)
-    else:  # pragma: win32 no cover
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    opened: list[int] = []
     try:
+        if sys.platform == "win32":  # pragma: win32 cover
+            # os.open would wait for an oplock holder to answer its break, past the caller's deadline.
+            opened.extend(map(open_read_without_oplock_wait, (path,)))
+        else:  # pragma: win32 no cover
+            open_into(opened, path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), 0)
+        fd = opened[0]
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):  # pragma: no cover  # only a non-regular node swapped in after the lstat
             return None, st
         data = os.read(fd, _MAX_LOCK_FILE_SIZE + 1)
     finally:
-        os.close(fd)
+        for fd in opened:
+            os.close(fd)
     if len(data) <= _MAX_LOCK_FILE_SIZE:
         with suppress(UnicodeDecodeError):
             return data.decode("utf-8"), st

@@ -90,17 +90,19 @@ def pin_inode(lock_file: str) -> Generator[int | None]:
         # O_PATH pins any node, a symlink or socket included, without read permission and without the filesystem seeing
         # an open; elsewhere a nonblocking read-only open pins what it can.
         flags = getattr(os, "O_PATH", os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)) | getattr(os, "O_NOFOLLOW", 0)
+        opened: list[int] = []
         try:
-            fd = os.open(lock_file, flags)
-        except FileNotFoundError:
-            raise
-        except OSError:
-            yield None
-            return
-        try:
+            try:
+                fd = open_into(opened, lock_file, flags, 0)
+            except FileNotFoundError:
+                raise
+            except OSError:
+                yield None
+                return
             yield os.fstat(fd).st_ino
         finally:
-            os.close(fd)
+            for fd in opened:
+                os.close(fd)
 
 
 def open_into(opened: list[int], path: str, flags: int, mode: int) -> int:  # pragma: win32 no cover
