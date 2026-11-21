@@ -1513,7 +1513,7 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             release_snapshot = (self._context.lock_generation, self._context.lock_counter)
             with (
                 contextlib.nullcontext()
-                if self._settings.thread_local or self._context.lock_file_fd is None
+                if self._settings.thread_local or self._context.lock_file_fd is None or pending is not None
                 else self._transition_lock
             ):
                 try:
@@ -1548,7 +1548,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         if not self._transition_lock.acquire(blocking=False):
             return  # pragma: no cover  # only a concurrent acquire of a shared instance holds the gate
         try:
-            if self._context.lock_file_fd is None:  # pragma: no branch  # only a racing acquire fills it
+            if (
+                self._context.lock_file_fd is None and self._context.strict_release is None
+            ):  # pragma: no branch  # a racing transition takes ownership
                 self._commit_release()
         finally:
             self._transition_lock.release()
@@ -1593,13 +1595,21 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
         self, snapshot: tuple[int, int] | None, release_error: BaseException, *, force: bool, transition_held: bool
     ) -> None:
         # A retry can only touch the original hold; a later acquirer may restore the same recursion depth.
-        if snapshot is None or self._context.lock_file_fd is None or is_system_call_failure(release_error):
+        if (
+            snapshot is None
+            or self._context.lock_file_fd is None
+            or self._context.strict_release is not None
+            or is_system_call_failure(release_error)
+        ):
             return
         with (
             contextlib.suppress(Exception),
             contextlib.nullcontext() if transition_held or self._settings.thread_local else self._transition_lock,
         ):
-            if snapshot == (self._context.lock_generation, self._context.lock_counter):
+            if self._context.strict_release is None and snapshot == (
+                self._context.lock_generation,
+                self._context.lock_counter,
+            ):
                 self._release_current(force=force)
 
     def _release_thread_holds(self, *, exited_only: bool) -> None:

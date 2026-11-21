@@ -70,7 +70,7 @@ from ._util import (
 )
 
 if sys.platform == "win32":  # pragma: win32 cover
-    from threading import current_thread
+    from threading import current_thread, main_thread
 
     from ._windows import (
         DirectoryPinBlockedError,
@@ -110,6 +110,7 @@ _CLAIM_PROBE_PREFIX: Final[str] = ".probe-v1-"
 #: How long a scan waits out a claim held in Windows' delete-pending state before treating it as unreadable.
 _CLAIM_READ_GRACE: Final[float] = 0.5
 _CLAIM_READ_RETRY: Final[float] = 0.002
+_RELEASE_SIGNAL_INTERVAL: Final[float] = 0.1
 #: Rides out a peer replacing the lock path mid-inspection; a foreign node or unreadable record outlasting it is damage.
 _SENTINEL_READ_GRACE: Final[float] = 0.5
 _NODE_DESCRIPTIONS: Final[MappingProxyType[int, str]] = MappingProxyType({
@@ -279,6 +280,8 @@ class StrictSoftFileLock(BaseFileLock):
                 self._transition_lock.release()
         if pending is not None:
             self._observe_release(state, pending, max(0, deadline - time.perf_counter()))
+        elif state.lock_file_registry is not None:
+            self._finish_interrupted_release()
 
     def _start_timed_release(self, state: FileLockContext) -> StrictRelease:  # pragma: win32 cover
         pending = StrictRelease()
@@ -362,7 +365,12 @@ class StrictSoftFileLock(BaseFileLock):
         def _release_current(self, *, force: bool) -> None:
             state = self._hold_state()
             held = state.lock_file_fd is not None
-            with self._transition_lock if held and not self.is_thread_local() else contextlib.nullcontext():
+            # Waiting for the worker does not need the gate another observer may hold.
+            with (
+                self._transition_lock
+                if held and not self.is_thread_local() and state.strict_release is None
+                else contextlib.nullcontext()
+            ):
                 if (pending := state.strict_release) is None:
                     if held:
                         super()._release_current(force=force)
@@ -385,11 +393,20 @@ class StrictSoftFileLock(BaseFileLock):
         if not pending.done() and pending.worker is current_thread():
             msg = "a release worker cannot wait for its own completion"
             raise RuntimeError(msg)
-        try:
-            error = pending.exception(None if timeout is None else _release_timeout(timeout))
-        except TimeoutError:
-            msg = f"release of {state.lock_file!r} is still pending"
-            raise ReleasePendingError(msg, functools.partial(self._observe_release, state, pending)) from None
+        deadline = None if timeout is None else time.perf_counter() + _release_timeout(timeout)
+        while True:
+            wait = None if deadline is None else max(0, deadline - time.perf_counter())
+            # Older Windows interpreters dispatch signals only after the condition wait returns.
+            if current_thread() is main_thread() and (wait is None or wait > _RELEASE_SIGNAL_INTERVAL):
+                wait = _RELEASE_SIGNAL_INTERVAL
+            try:
+                error = pending.exception(wait)
+            except TimeoutError:
+                if deadline is not None and time.perf_counter() >= deadline:
+                    msg = f"release of {state.lock_file!r} is still pending"
+                    raise ReleasePendingError(msg, functools.partial(self._observe_release, state, pending)) from None
+            else:
+                break
         self._forget_release(state, pending)
         if error is not None:
             raise error

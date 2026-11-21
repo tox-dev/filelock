@@ -563,15 +563,34 @@ def test_pending_release_allows_unbounded_acquire_cancellation(
 
 
 @_WINDOWS  # pragma: win32 cover
-def test_timed_release_with_an_open_windows_reader(lock_path: Path) -> None:
+def test_timed_release_with_an_open_windows_reader(lock_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     assert sys.platform == "win32"
     from filelock import _windows
 
     lock = StrictSoftFileLock(lock_path)
     lock.acquire()
     held = next(lock._claim_directory.glob("held-*.claim"))
+    proceed = threading.Event()
+
+    def pause_before_withdrawal(record: logging.LogRecord) -> bool:
+        if record.msg == "Attempting to release lock %s on %s" and record.args == (id(lock), str(lock_path)):
+            assert proceed.wait(5)
+        return True
+
+    caplog.set_level(logging.DEBUG, logger="filelock")
+    logger = logging.getLogger("filelock")
     with os.fdopen(_windows.open_read_without_oplock_wait(str(held)), "rb") as reader:
-        lock.release_with_timeout(5)
+        logger.addFilter(pause_before_withdrawal)
+        try:
+            with pytest.raises(ReleasePendingError) as pending:
+                lock.release_with_timeout(0.02)
+            assert (held.exists(), lock.is_locked) == (True, True)
+            with pytest.raises(Timeout):
+                StrictSoftFileLock(lock_path).acquire(blocking=False)
+        finally:
+            proceed.set()
+            logger.removeFilter(pause_before_withdrawal)
+        pending.value.wait(5)
         assert not held.exists()
         with StrictSoftFileLock(lock_path, timeout=0) as peer:
             assert (peer.is_locked, bool(reader.read())) == (True, True)
@@ -678,8 +697,15 @@ def test_worker_can_enter_a_peer_only_after_withdrawal(lock_path: Path, caplog: 
 
 
 @_WINDOWS  # pragma: win32 cover
+@pytest.mark.parametrize(
+    "retry",
+    [
+        pytest.param(lambda lock: lock.release(), id="ordinary"),
+        pytest.param(lambda lock: lock.release_with_timeout(0), id="timed"),
+    ],
+)
 def test_retry_after_interrupted_release_commit_removes_the_registry_entry(
-    lock_path: Path, mocker: MockerFixture
+    lock_path: Path, mocker: MockerFixture, retry: Callable[[StrictSoftFileLock], None]
 ) -> None:
     lock = StrictSoftFileLock(lock_path)
     peer = StrictSoftFileLock(lock_path)
@@ -691,7 +717,7 @@ def test_retry_after_interrupted_release_commit_removes_the_registry_entry(
     with pytest.raises(RuntimeError, match="Deadlock"):
         peer.acquire(timeout=-1)
     mocker.stop(interrupted)
-    lock.release()
+    retry(lock)
     with peer.acquire(timeout=-1):
         assert (peer.is_locked, lock.lock_counter) == (True, 0)
 
@@ -716,3 +742,103 @@ def test_acquisition_callback_cannot_start_a_release(lock_path: Path, caplog: py
             assert (claimed.is_set(), lock.is_locked, len(lock.claims)) == (True, True, 2)
     finally:
         logger.removeFilter(release_on_acquire)
+
+
+@_WINDOWS  # pragma: win32 cover
+def test_interrupted_release_wait_leaves_the_worker_pending(
+    deferred_release: tuple[StrictSoftFileLock, ReleasePendingError, threading.Event], mocker: MockerFixture
+) -> None:
+    lock, receipt, proceed = deferred_release
+    patched = mocker.patch.object(
+        Future,
+        "exception",
+        autospec=True,
+        side_effect=[KeyboardInterrupt("release wait interrupted"), KeyboardInterrupt("unexpected second wait")],
+    )
+    try:
+        with pytest.raises(KeyboardInterrupt, match="release wait interrupted"):
+            lock.release()
+    finally:
+        mocker.stop(patched)
+    assert (proceed.is_set(), lock.is_locked, len(lock.claims)) == (False, True, 2)
+    proceed.set()
+    receipt.wait(5)
+    assert (lock.is_locked, lock.claims) == (False, ())
+
+
+@_WINDOWS  # pragma: win32 cover
+@pytest.mark.parametrize("observers", [pytest.param("1", id="one-observer"), pytest.param("2", id="two-observers")])
+def test_main_thread_receives_interrupt_while_waiting_for_release(lock_path: Path, observers: str) -> None:
+    code = dedent("""
+        import _thread
+        import sys
+        import threading
+        from concurrent.futures import Future
+        from filelock import ReleasePendingError, StrictSoftFileLock
+
+        proceed = threading.Event()
+
+        class SlowRelease(StrictSoftFileLock):
+            def _release(self):
+                assert proceed.wait(8)
+                super()._release()
+
+        lock = SlowRelease(sys.argv[1], thread_local=False)
+        lock.acquire()
+        try:
+            lock.release_with_timeout(0)
+        except ReleasePendingError as pending:
+            receipt = pending
+
+        def inside(thread, code):
+            frame = sys._current_frames()[thread.ident]
+            while frame:
+                if frame.f_code is code:
+                    return True
+                frame = frame.f_back
+            return False
+
+        observers = []
+        if sys.argv[2] == "2":
+            observer = threading.Thread(target=lock.release)
+            observers.append(observer)
+            observer.start()
+            for _ in range(300):
+                if inside(observer, Future.exception.__code__):
+                    break
+                proceed.wait(0.01)
+            else:
+                raise AssertionError("second observer did not start waiting")
+
+        def interrupt_wait():
+            wait = lock.release.__code__ if observers else Future.exception.__code__
+            while not proceed.wait(0.01):
+                if inside(threading.main_thread(), wait):
+                    _thread.interrupt_main()
+                    return
+
+        interrupt = threading.Timer(0.25, interrupt_wait)
+        fallback = threading.Timer(3, proceed.set)
+        fallback.start()
+        interrupt.start()
+        try:
+            lock.release()
+        except KeyboardInterrupt:
+            assert not proceed.is_set()
+            assert lock.is_locked and len(lock.claims) == 2
+            print("interrupted while pending")
+        finally:
+            proceed.set()
+            fallback.cancel()
+            interrupt.join()
+            fallback.join()
+            for observer in observers:
+                observer.join(5)
+                assert not observer.is_alive()
+        receipt.wait(5)
+        assert not lock.is_locked and not lock.claims
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(lock_path), observers], capture_output=True, text=True, timeout=15, check=True
+    )
+    assert result.stdout.strip() == "interrupted while pending"

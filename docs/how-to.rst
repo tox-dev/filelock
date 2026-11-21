@@ -1035,7 +1035,7 @@ which may already belong to another caller on a shared instance.
 If withdrawal or handle closure fails, ``pending.wait()`` raises the original filesystem error. If withdrawal failed and
 the lock is still held, retry release on the original lock. With the default thread-local ownership, the acquiring
 thread must make that retry. A plain :exc:`TimeoutError` while waiting for another thread to finish a lock transition
-means release could not start.
+means release could not start. Interrupting a wait leaves the worker running. Use the receipt to wait again.
 
 Finish using the protected resource before starting release. The owner's ``is_locked`` stays true while the worker runs.
 Once Windows withdraws the public claims, another process can acquire while the worker finishes closing the handles.
@@ -1044,7 +1044,8 @@ An ``acquire()`` that encounters a pending release on the same hold waits accord
 ``cancel_check``. A nonblocking attempt, an expired deadline, or cancellation raises :class:`~filelock.Timeout`.
 Use the pending release's ``wait()`` to retrieve any error from its worker.
 
-Python does not wait for the release worker at shutdown. If the process exits before withdrawal, public claims can
+The interpreter does not join the daemon worker at shutdown. The release deadline applies to the caller's wait.
+It gives no bound on Windows process exit. If the process exits before withdrawal, public claims can
 remain. Verify that the owner has stopped using the resource before removing its claims with ``force_break()``. See
 :ref:`how-to:Use fail-closed soft locks`.
 
