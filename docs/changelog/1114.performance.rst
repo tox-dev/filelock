@@ -1,0 +1,2 @@
+:class:`SoftReadWriteLock` reuses the open generation directory when updating :file:`HEAD`, reducing directory
+ownership checks during write acquisition and release.
