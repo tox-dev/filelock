@@ -491,11 +491,11 @@ How filelock mitigates this:
 
 The defense differs by platform:
 
-- On Unix, filelock opens lock files with ``O_NOFOLLOW``, so a symlink planted at the lock path makes the open fail
-  instead of reaching its target. ``O_NOFOLLOW`` does not catch a hard link (a second name for the same file) or a file
-  renamed to the lock path, and such a file is indistinguishable from a lock file. :class:`UnixFileLock
-  <filelock.UnixFileLock>` therefore locks a file it did not create as found, without truncating it or changing its
-  mode.
+- On Unix, filelock opens lock files with ``O_NOFOLLOW``, so a symlink at the lock path makes the open fail.
+  :class:`UnixFileLock <filelock.UnixFileLock>` leaves the contents and mode of an existing file intact, including
+  when the file has another hard link. If you supply ``on_acquired``, acquisition raises :class:`PermissionError`
+  before the callback receives a descriptor for a file with another hard link. Keep callback lock files in a directory
+  you control. A file renamed to the lock path can have a single link.
 - Windows has no ``O_NOFOLLOW``. :class:`WindowsFileLock <filelock.WindowsFileLock>` opens the file without following
   reparse points and rejects a symlink or junction by inspecting the handle it locks, so a swap between check and use
   cannot redirect it. Only the last path component is guarded; the lock directory must not be writable by untrusted

@@ -286,11 +286,9 @@ else:  # pragma: win32 no cover
             # it and let the retry loop start over.
             if (stat_result := os.fstat(fd)).st_nlink == 0:
                 return
-            # O_NOFOLLOW refuses a symlink but not a hard link. Where the kernel lets an account link a file it does not
-            # own (macOS, FreeBSD, Linux without fs.protected_hardlinks), another user can link one of ours to the lock
-            # path. foreign_owner then sees our own uid, and on_acquired would write or truncate through to that file.
-            if stat_result.st_nlink > 1:
-                reason = "lock file has another hard link, so it may be a different file of this account"
+            # A callback may truncate the descriptor. A second name could belong to an unrelated file.
+            if stat_result.st_nlink > 1 and self._settings.on_acquired is not None:
+                reason = "lock file has another hard link and cannot be passed to on_acquired"
                 raise PermissionError(EACCES, reason, self._lock_path)
             # The owner of a file under a sticky parent may unlink it during the hold. A contender then locks a new
             # inode at the path, and both hold the lock.

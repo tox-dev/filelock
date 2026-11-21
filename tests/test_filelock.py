@@ -2398,23 +2398,37 @@ def test_lock_file_of_another_account_under_sticky_parent_is_refused(  # pragma:
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl
-def test_hard_link_to_another_file_is_refused(tmp_path: Path) -> None:
-    # Another account can link a file of ours to the lock path where the kernel allows it; the hook must not get it.
-    victim = tmp_path / "victim"
-    victim.write_bytes(b"keep me")
+def test_hard_linked_lock_file_is_refused_until_the_extra_name_is_removed(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lock"
-    os.link(victim, lock_path)
+    lock_path.write_bytes(b"holder metadata")
+    alias = tmp_path / "alias"
+    alias.hardlink_to(lock_path)
     calls: list[int] = []
+    lock = FileLock(lock_path, timeout=0, on_acquired=calls.append)
 
-    def truncate(fd: int) -> None:
-        calls.append(fd)
-        os.ftruncate(fd, 0)
-
-    lock = FileLock(lock_path, timeout=0, is_singleton=False, on_acquired=truncate)
     with pytest.raises(PermissionError, match="another hard link") as raised:
         lock.acquire()
     assert (raised.value.filename, lock.is_locked, calls) == (str(lock_path.resolve()), False, [])
-    assert victim.read_bytes() == b"keep me"
+    assert alias.read_bytes() == b"holder metadata"
+
+    alias.unlink()
+    with lock:
+        (fd,) = calls
+        assert os.path.samestat(os.fstat(fd), lock_path.stat())
+
+
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_hard_linked_names_share_a_native_lock_without_a_callback(tmp_path: Path) -> None:
+    path = tmp_path / "test.lock"
+    path.write_bytes(b"holder metadata")
+    alias = tmp_path / "alias"
+    alias.hardlink_to(path)
+    contender = UnixFileLock(alias, timeout=0)
+
+    with UnixFileLock(path), pytest.raises(Timeout):
+        contender.acquire()
+    with contender:
+        assert alias.read_bytes() == b"holder metadata"
 
 
 @pytest.mark.skipif(sys.platform not in {"linux", "android"}, reason="ownership proof uses Linux procfs")
