@@ -789,6 +789,7 @@ You can pass a custom executor, and an explicit event loop:
 
 By default, ``AsyncReadWriteLock`` creates a dedicated single-worker pool because SQLite pins a connection to one
 thread. ``await rw.close()`` waits for its worker to exit, even after the event loop's default executor has shut down.
+If the task awaiting ``close()`` is canceled, await ``rw.close()`` again to finish the same shutdown.
 If you pass your own executor, shut it down yourself. With ``loop=None``, each call uses the running loop:
 
 .. code-block:: python

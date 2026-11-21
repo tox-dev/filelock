@@ -49,6 +49,32 @@ _T = TypeVar("_T")
 TASKS_THREAD_ID: Final[int] = 0
 
 
+class AsyncClose:
+    def __init__(self) -> None:
+        self._gate = AsyncTransitionGate()
+        self._join: tuple[ThreadPoolExecutor, ConcurrentFuture[None]] | None = None
+
+    async def close(self, retire: Callable[[], Awaitable[None]], executor: Executor | None) -> None:
+        async with self._gate.hold():
+            await retire()
+            if executor is None:
+                return
+            if self._join is None:
+                pool = cast("ThreadPoolExecutor", executor)
+                pool.shutdown(wait=False)
+                if not pool._threads:  # ruff:ignore[private-member-access]  # only the pool tracks its workers
+                    return
+                # A queued job may still need the event loop after its default executor shuts down.
+                joiner = type(pool)(max_workers=1)
+                try:
+                    self._join = joiner, joiner.submit(pool.shutdown)
+                finally:
+                    joiner.shutdown(wait=False)
+            joiner, joined = self._join
+        await asyncio.shield(asyncio.wrap_future(joined))
+        joiner.shutdown()
+
+
 class AsyncTransitionGate:
     # First-in, first-out admission for the calls that transition one lock context.
     #
@@ -589,20 +615,6 @@ def capture_call(func: Callable[[], _T]) -> BackendOutcome[_T]:
         return BackendOutcome(error=error)
 
 
-async def shutdown_owned_executor(executor: Executor) -> None:
-    pool = cast("ThreadPoolExecutor", executor)
-    pool.shutdown(wait=False)
-    if not pool._threads:  # ruff:ignore[private-member-access]  # only the pool tracks its workers
-        return
-    # Jobs on the lock's executor may need the loop to finish, even after the loop's default pool shuts down.
-    joiner = type(pool)(max_workers=1)
-    joined = joiner.submit(pool.shutdown)
-    try:
-        await asyncio.shield(asyncio.wrap_future(joined))
-    finally:
-        joiner.shutdown(wait=joined.done())
-
-
 async def capture_awaitable(awaitable: Awaitable[_T]) -> BackendOutcome[_T]:
     try:
         return BackendOutcome(value=await awaitable)
@@ -612,6 +624,7 @@ async def capture_awaitable(awaitable: Awaitable[_T]) -> BackendOutcome[_T]:
 
 __all__ = [
     "TASKS_THREAD_ID",
+    "AsyncClose",
     "AsyncTransitionGate",
     "AsyncTransitionUnavailableError",
     "BackendOutcome",
@@ -622,7 +635,6 @@ __all__ = [
     "raise_cancelled_error",
     "retire_task_holds_at_exit",
     "run_in_executor",
-    "shutdown_owned_executor",
     "submit_call",
     "task_owners_for",
     "wait_until_done",

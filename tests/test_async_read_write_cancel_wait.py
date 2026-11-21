@@ -4,10 +4,12 @@ import asyncio
 import sys
 import threading
 import time
+from contextlib import suppress
 from errno import EWOULDBLOCK
 from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 import pytest
+import pytest_asyncio
 
 pytest.importorskip("sqlite3")
 
@@ -16,7 +18,7 @@ from filelock import AsyncReadWriteLock, AsyncSoftReadWriteLock, ReadWriteLock, 
 from tests.capability_marks import XFAIL_WITHOUT_COROUTINE_CANCELLATION
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
+    from collections.abc import AsyncIterator, Callable, Generator
     from pathlib import Path
 
     from pytest_mock import MockerFixture
@@ -229,3 +231,53 @@ async def test_singleton_close_returns_while_another_wrapper_enters(tmp_path: Pa
         await waiting.close()
         shared.close()
         holder.close()
+
+
+@_FAMILIES
+@pytest.mark.parametrize(
+    "closing_worker",
+    [pytest.param("retire", id="backend"), pytest.param("join", id="worker"), pytest.param("retry", id="canceled")],
+    indirect=True,
+)
+@pytest.mark.asyncio
+async def test_second_close_waits_for_the_owned_worker(
+    closing_worker: tuple[AsyncReadWriteLock | AsyncSoftReadWriteLock, threading.Thread, threading.Event],
+) -> None:
+    lock, worker, resume = closing_worker
+
+    async def close_on_another_loop() -> None:
+        second = asyncio.create_task(lock.close())
+        await asyncio.sleep(0)
+        try:
+            assert not second.done()
+        finally:
+            resume.set()
+            await second
+        assert not worker.is_alive()
+
+    await asyncio.to_thread(asyncio.run, close_on_another_loop())
+
+
+@pytest_asyncio.fixture(loop_scope="function")
+async def closing_worker(
+    request: pytest.FixtureRequest, tmp_path: Path, make: _Make
+) -> AsyncIterator[tuple[AsyncReadWriteLock | AsyncSoftReadWriteLock, threading.Thread, threading.Event]]:
+    sync, lock = make(tmp_path, is_singleton=True)
+    if request.param == "retire":
+        await lock.acquire_write()
+    worker = await asyncio.wrap_future(lock.executor.submit(threading.current_thread))
+    resume = threading.Event()
+    lock.executor.submit(resume.wait, 5)
+    closing = asyncio.create_task(lock.close())
+    try:
+        await asyncio.sleep(0)
+        if request.param == "retry":
+            closing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await closing
+        yield lock, worker, resume
+    finally:
+        resume.set()
+        with suppress(asyncio.CancelledError):
+            await closing
+        sync.close()
