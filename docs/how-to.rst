@@ -804,10 +804,10 @@ You can pass a custom executor, and an explicit event loop:
     executor = ThreadPoolExecutor(max_workers=2)
     rw = AsyncReadWriteLock("data.db", executor=executor, loop=loop)
 
-Who owns that executor decides whether you must clean up. Left at ``None``, ``AsyncReadWriteLock`` **creates and owns**
-a dedicated single-worker pool, because SQLite pins a connection to one thread; ``close()`` shuts it down. Pass your own
-and filelock uses it as-is and never shuts it down. Either way, ``loop=None`` binds to whatever loop is running at the
-time of the call rather than at construction:
+By default, ``AsyncReadWriteLock`` creates a dedicated single-worker pool because SQLite pins a connection to one
+thread. ``await rw.close()`` waits for its worker to exit, even after the event loop's default executor has shut down.
+If the task awaiting ``close()`` is canceled, await ``rw.close()`` again to finish the same shutdown.
+If you pass your own executor, shut it down yourself. With ``loop=None``, each call uses the running loop:
 
 .. code-block:: python
 

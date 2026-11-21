@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar
 
 from filelock._async import (  # simplint: ignore[private-import-path]  # shared parent helper
     TASKS_THREAD_ID,
+    AsyncClose,
     BackendOutcome,
     drain_future,
     future_result,
@@ -106,6 +107,7 @@ class AsyncSoftReadWriteLock:
     ) -> None:
         self._creator_pid = os.getpid()
         self._closed = False
+        self._close_state = AsyncClose()
         self._closing: ConcurrentFuture[None] | None = None
         self._owns_backend = not is_singleton
         #: Marks the task holds taken through this wrapper, which its close() ends.
@@ -400,7 +402,12 @@ class AsyncSoftReadWriteLock:
 
         """
         ensure_current_process()
-        if self._creator_pid != os.getpid() or self._closed:
+        if self._creator_pid != os.getpid():  # pragma: forked child
+            return
+        await self._close_state.close(self._retire, self._executor if self._owns_executor else None)
+
+    async def _retire(self) -> None:
+        if self._closed:
             return
         # Refuse acquires from here on, so none is admitted into a hold the backend is letting go of.
         closing = self._closing = ConcurrentFuture()
@@ -422,15 +429,6 @@ class AsyncSoftReadWriteLock:
             self._closing = None
             closing.set_result(None)
             self._owners.wake_via(self._via)
-        if self._owns_executor:
-            # Jobs on the lock's executor may need the loop to finish, even after the loop's default pool shuts down.
-            self._executor.shutdown(wait=False)
-            joiner = ThreadPoolExecutor(max_workers=1)
-            joined = joiner.submit(self._executor.shutdown)
-            try:
-                await asyncio.shield(asyncio.wrap_future(joined))
-            finally:
-                joiner.shutdown(wait=joined.done())
 
     # The fork registry calls this method by name.
     def _reset_after_fork_in_child(self) -> None:  # pragma: forked child  # simplint: ignore[unused-definition]
