@@ -9,12 +9,14 @@ if TYPE_CHECKING:
 __spec__ = cast("ModuleSpec", __spec__)
 
 __lazy_modules__ = [
+    "concurrent.futures",
     "contextlib",
     "functools",
     "itertools",
     "pathlib",
     "secrets",
     "tempfile",
+    "threading",
     f"{__spec__.parent}._error",
     f"{__spec__.parent}._identity",
     f"{__spec__.parent}._marker",
@@ -64,12 +66,17 @@ from ._util import (
 )
 
 if sys.platform == "win32":  # pragma: win32 cover
+    from concurrent.futures import Future
+    from threading import Thread
+
     from ._windows import (
+        DirectoryPinBlockedError,
         cancelling_oplock_wait,
         is_unlinked,
         mark_claim_for_deletion,
         open_deletable_for_reading,
         open_read_without_oplock_wait,
+        oplock_wait_cancelled,
         pin_directory,
         publish_deletable_claim,
         unpin_directory,
@@ -218,7 +225,7 @@ class StrictSoftFileLock(BaseFileLock):
 
     def _acquire(self) -> None:
         # Finish a doorway whose claim cleanup failed before publishing, so this owner never contends with leftovers.
-        self._discard_pending_doorways(exited_only=True)
+        deadline = self._context.claim_deadline
         lock_path = Path(self._lock_path)
         coordination_directory = Path(f"{lock_path}{_COORDINATION_SUFFIX}")
         claim_directory = coordination_directory / _CLAIM_DIRECTORY_NAME
@@ -226,13 +233,14 @@ class StrictSoftFileLock(BaseFileLock):
         # search permission where the mode grants read.
         directory_mode: Final[int] = (mode := self._open_mode()) | (mode & 0o444) >> 2
         try:
+            self._discard_pending_doorways(exited_only=True, deadline=deadline)
             _ensure_protocol_directory(self.lock_file, coordination_directory, directory_mode)
             _ensure_claim_directory(self.lock_file, claim_directory, directory_mode)
             sentinel_fd = _open_or_create_sentinel(
                 self.lock_file, lock_path, self._open_mode(), self._occupant_unchanged_for
             )
-        except _ClaimScanLimitError:
-            return  # pragma: win32 no cover
+        except _RetryDoorwayError:
+            return
         if sentinel_fd is None:
             return
         try:
@@ -247,19 +255,19 @@ class StrictSoftFileLock(BaseFileLock):
         try:
             if won := self._attempt_doorway(claim_directory):
                 self._mark_descriptor_owned(sentinel_fd, sentinel_identity)
-        except _ClaimScanLimitError:
+        except _RetryDoorwayError:
             won = False
         except BaseException as acquisition_error:
             # Once recorded as held, the acquire's rollback releases the claim instead.
             if not self.is_locked:
-                self._discard_doorway(acquisition_error)
+                self._discard_doorway(deadline, acquisition_error)
             raise
         if not won:
-            self._discard_doorway()
+            self._discard_doorway(deadline)
 
-    def _discard_pending_doorways(self, *, exited_only: bool) -> None:
-        if self._context.owner_claim_paths and not self.is_locked:
-            self._discard_doorway()
+    def _discard_pending_doorways(self, *, exited_only: bool, deadline: float | None) -> None:
+        if (self._context.claim_withdrawal is not None or self._context.owner_claim_paths) and not self.is_locked:
+            self._discard_doorway(deadline)
         if not isinstance(context := self._context, ThreadLocalFileContext):
             return
         # Only this registry reaches an exited thread's thread-local doorway; a live thread finishes its own.
@@ -270,7 +278,7 @@ class StrictSoftFileLock(BaseFileLock):
                     continue
                 context.current = pending
                 try:
-                    self._discard_doorway()
+                    self._discard_doorway(deadline)
                 finally:
                     context.current = own
 
@@ -319,7 +327,7 @@ class StrictSoftFileLock(BaseFileLock):
             if isinstance(error, OSError) and error.errno == EEXIST:
                 # Another file holds the name, so it is not this owner's to remove.
                 self._context.owner_claim_paths = ()
-                _, cleanup_errors = self._unlink_owner_claims(acquiring=True)
+                _, cleanup_errors = self._unlink_owner_claims(self._hold_state(), deadline=self._context.claim_deadline)
                 if cleanup_errors:  # pragma: win32 cover
                     _raise_recorded_errors("strict claim protection cleanup failed", cleanup_errors)
                 return False
@@ -358,7 +366,7 @@ class StrictSoftFileLock(BaseFileLock):
         self, claim_directory: Path, intent_name: str, intent_path: str, token: str
     ) -> BaseException | None:
         if sys.platform == "win32":  # pragma: win32 cover
-            self._context.claim_protection = _pin_claim_directory(claim_directory)
+            self._context.claim_protection = _pin_claim_directory(claim_directory, acquiring=True)
             self._context.claim_descriptors = {}
             self._publish_windows_claim(claim_directory, intent_name, token)
             return None
@@ -385,19 +393,20 @@ class StrictSoftFileLock(BaseFileLock):
             self._context.claim_deadline,
         )
 
-    def _unlink_owner_claims(self, *, acquiring: bool) -> tuple[list[str], list[BaseException]]:
+    def _unlink_owner_claims(
+        self, state: FileLockContext, *, deadline: float | None = None
+    ) -> tuple[list[str], list[BaseException]]:
         results = [
-            (path, _unlink_owner_path_result(path, self._context, acquiring=acquiring))
-            for path in self._context.owner_claim_paths
+            (path, _unlink_owner_path_result(path, state, deadline=deadline)) for path in state.owner_claim_paths
         ]
         remaining = [path for path, (removed, _) in results if not removed]
         errors = [error for _, (_, error) in results if error is not None]
-        self._context.owner_claim_paths = tuple(remaining)
+        state.owner_claim_paths = tuple(remaining)
         if (not remaining or self._finalizing) and (  # pragma: win32 cover
-            protection := self._context.claim_protection
+            protection := state.claim_protection
         ) is not None:
-            self._context.claim_protection = None
-            self._context.claim_descriptors = None
+            state.claim_protection = None
+            state.claim_descriptors = None
             try:
                 protection.close()
             except BaseException as close_error:  # ruff:ignore[blind-except]  # preserve claim cleanup failures
@@ -424,8 +433,15 @@ class StrictSoftFileLock(BaseFileLock):
                 self._context.owner_claim_paths = (str(claim_directory / intent_name),)
             raise
 
-    def _discard_doorway(self, acquisition_error: BaseException | None = None) -> None:
-        remaining, errors = self._unlink_owner_claims(acquiring=True)
+    def _discard_doorway(self, deadline: float | None, acquisition_error: BaseException | None = None) -> None:
+        state = self._hold_state()
+        if (pending := state.claim_withdrawal) is not None:  # pragma: win32 cover
+            if not pending.done():
+                raise _RetryDoorwayError
+            state.claim_withdrawal = None
+            remaining, errors = pending.result()
+        else:
+            remaining, errors = self._unlink_owner_claims(state, deadline=deadline)
         # The pending descriptor holds no lock and a retry needs the claim paths alone. A dropped instance does not
         # retry, so close it now.
         if (fd := self._context.pending_lock_file_fd) is not None:
@@ -439,12 +455,42 @@ class StrictSoftFileLock(BaseFileLock):
         ):  # pragma: win32 cover
             errors.insert(0, acquisition_error)
         if remaining:
-            # Stay pending, not owned: is_locked reports only a held claim that passed the final rescan. The next
-            # acquire retries this cleanup.
+            # Keep the original handles and names while Windows finishes withdrawal. Other cleanup errors reach
+            # the caller with the surviving claims available for retry.
+            if (
+                sys.platform == "win32"
+                and deadline is not None
+                and acquisition_error is None
+                and pending is None
+                and all(map(oplock_wait_cancelled, errors))
+            ):  # pragma: win32 cover
+                self._defer_withdrawal(state)
+                return
             _raise_recorded_errors("strict doorway claim cleanup failed", errors)
         self._mark_descriptor_released()
         if errors:
             _raise_recorded_errors("strict doorway cleanup failed", errors)
+
+    def _defer_withdrawal(self, state: FileLockContext) -> None:  # pragma: win32 cover
+        # A caller can drop out at its deadline. Peers still need the public names withdrawn once the reader leaves.
+        pending: Future[tuple[list[str], list[BaseException]]] = Future()
+
+        def withdraw() -> None:
+            if not pending.set_running_or_notify_cancel():
+                return
+            try:
+                pending.set_result(self._unlink_owner_claims(state))
+            except BaseException as error:  # ruff:ignore[blind-except]  # return the worker's failure to the owner
+                pending.set_exception(error)
+
+        worker = Thread(target=withdraw, name="filelock-claim-withdrawal", daemon=True)
+        state.claim_withdrawal = pending
+        try:
+            worker.start()
+        except BaseException:
+            if pending.cancel():
+                state.claim_withdrawal = None
+            raise
 
     def force_break(self, claim_name: str) -> None:
         """
@@ -478,7 +524,9 @@ class StrictSoftFileLock(BaseFileLock):
         # release() skips a doorway whose cleanup failed, as it is no hold, so a dropped instance would strand claims.
         with contextlib.suppress(Exception):
             # GraalPy defers finalizers to the host collector, so its tests cannot drive this cleanup.
-            self._discard_pending_doorways(exited_only=exited_only)  # pragma: needs collected-finalization
+            self._discard_pending_doorways(
+                exited_only=exited_only, deadline=time.perf_counter()
+            )  # pragma: needs collected-finalization
 
     def _reconcile_failed_acquire(self, canonical: str, *, levels_before: int) -> None:
         # The acquisition is over, so the next one resolves the working directory again rather than reuse this one's.
@@ -488,7 +536,7 @@ class StrictSoftFileLock(BaseFileLock):
     def _release(self) -> None:
         fd = cast("int", self._context.lock_file_fd)
         self._context.claim_root = None
-        remaining, errors = self._unlink_owner_claims(acquiring=False)
+        remaining, errors = self._unlink_owner_claims(self._hold_state())
         if remaining:
             _raise_recorded_errors("strict claim release failed", errors)
         self._mark_descriptor_released()
@@ -509,7 +557,7 @@ def _read_existing_claims(
 ) -> tuple[StrictSoftFileClaim, ...]:
     if not _OPEN_SUPPORTS_DIR_FD:  # pragma: lacks dir-fd
         try:
-            pinned = _pin_claim_directory(directory)
+            pinned = _pin_claim_directory(directory, acquiring=entry_limit is not None)
         except FileNotFoundError:
             return ()
         except OSError as error:
@@ -640,7 +688,7 @@ def _refuse_excess_claims(lock_file: str, names: list[str]) -> None:
     for name in names:
         if _parse_claim_name(name) is None:
             raise SoftFileLockProtocolError(lock_file, name, "unknown claim name or protocol version")
-    raise _ClaimScanLimitError
+    raise _RetryDoorwayError
 
 
 def _is_reclaimable_private_name(name: str) -> bool:
@@ -1153,7 +1201,7 @@ def _refuse_unrelated_claim_entries(lock_file: str, directory: Path, fd: int) ->
         except OSError as error:
             reason = f"cannot reclaim private claim records: {error.strerror or type(error).__name__}"
             raise SoftFileLockProtocolError(lock_file, None, reason) from error
-        raise _ClaimScanLimitError
+        raise _RetryDoorwayError
 
 
 def _settle_opened_directory_mode(
@@ -1172,7 +1220,7 @@ def _settle_opened_directory_mode(
 def _ensure_claim_directory(lock_file: str, directory: Path, mode: int) -> None:
     if not (_OPEN_SUPPORTS_DIR_FD and _MKDIR_SUPPORTS_DIR_FD):  # pragma: lacks dir-fd
         try:
-            pinned = pin_directories(directory.parent)
+            pinned = pin_directories(directory.parent, acquiring=True)
         except OSError as error:
             raise SoftFileLockProtocolError(lock_file, None, f"cannot open {directory.parent}") from error
         with pinned:
@@ -1192,7 +1240,7 @@ def _ensure_claim_directory(lock_file: str, directory: Path, mode: int) -> None:
                 os.close(coordination_fd)
 
 
-def pin_directories(*directories: Path) -> contextlib.ExitStack[bool | None]:
+def pin_directories(*directories: Path, acquiring: bool = False) -> contextlib.ExitStack[bool | None]:
     # Windows has no dir_fd, so each operation resolves every path component by name again. An open handle on a
     # directory blocks a rename of it, and with it a swap for a junction (a directory that points at another directory),
     # until the operation ends. Other platforms work through descriptors and hold nothing.
@@ -1200,7 +1248,11 @@ def pin_directories(*directories: Path) -> contextlib.ExitStack[bool | None]:
     if sys.platform == "win32":  # pragma: win32 cover
         with stack:
             for directory in directories:
-                stack.callback(unpin_directory, pin_directory(str(directory)))
+                try:
+                    pin = pin_directory(str(directory), wait_for_oplock=not acquiring)
+                except DirectoryPinBlockedError as error:
+                    raise _RetryDoorwayError from error
+                stack.callback(unpin_directory, pin)
             return stack.pop_all()
     return stack  # pragma: win32 no cover
 
@@ -1303,8 +1355,8 @@ def _claim_token_key(name: str) -> str:
     return name.removeprefix("held-").removeprefix("intent-")
 
 
-def _pin_claim_directory(directory: Path) -> contextlib.ExitStack[bool | None]:
-    return pin_directories(directory.parent, directory)
+def _pin_claim_directory(directory: Path, *, acquiring: bool = False) -> contextlib.ExitStack[bool | None]:
+    return pin_directories(directory.parent, directory, acquiring=acquiring)
 
 
 def _publish_record(
@@ -1454,7 +1506,7 @@ def _private_record_name(public_name: str) -> str:
 
 
 def _unlink_owner_path_result(
-    path: str, context: FileLockContext, *, acquiring: bool
+    path: str, context: FileLockContext, *, deadline: float | None
 ) -> tuple[bool, BaseException | None]:
     directory, name = os.path.split(path)
     try:
@@ -1465,7 +1517,7 @@ def _unlink_owner_path_result(
                 Path(directory),
                 name,
                 claim_fd=fd,
-                cancel_wait=cancelling_oplock_wait(context.claim_deadline) if acquiring else None,
+                cancel_wait=cancelling_oplock_wait(deadline) if deadline is not None else None,
             )
         with _pin_claim_directory(claim_directory := Path(directory or os.curdir)):  # pragma: win32 no cover
             return True, _unlink_in_directory(claim_directory, name)
@@ -1559,11 +1611,11 @@ def _unlink_error(path: Path) -> OSError | None:  # pragma: win32 cover
     return None
 
 
-class _ClaimScanLimitError(Exception):
+class _RetryDoorwayError(Exception):
     pass
 
 
-class _ClaimEntryLimitError(_ClaimScanLimitError):
+class _ClaimEntryLimitError(_RetryDoorwayError):
     def __str__(self) -> str:
         directory, read, hidden = self.args
         return f"{directory} exceeds the scan limit of {read} entries ({hidden} hidden entries in the first {read})"

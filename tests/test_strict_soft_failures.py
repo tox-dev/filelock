@@ -67,10 +67,13 @@ _NEEDS_FILE_LEASE: Final[pytest.MarkDecorator] = pytest.mark.skipif(
 )
 
 if TYPE_CHECKING:
+    import ctypes
     from collections.abc import Callable, Iterator
     from contextlib import AbstractContextManager, ExitStack
+    from ctypes import wintypes
 
     from pytest_mock import MockerFixture, MockType
+
 
 _PathValue = str | bytes | os.PathLike[str] | os.PathLike[bytes]
 
@@ -3174,6 +3177,227 @@ def test_strict_soft_release_accepts_a_claim_already_removed(lock_path: Path, mo
         assert lock.is_locked
 
 
+@pytest.fixture
+def lost_windows_doorway(lock_path: Path, mocker: MockerFixture) -> None:  # pragma: win32 cover
+    assert sys.platform == "win32"
+    from filelock import _windows
+
+    _initialize_protocol(lock_path)
+    rename = _windows._rename_open_claim
+    token = mocker.patch("filelock._strict.secrets.token_hex", autospec=True, side_effect=lambda size: "f" * (size * 2))
+    winner = Path(f"{lock_path}.filelock") / "claims" / f"intent-v1-{'0' * 32}.claim"
+
+    def publish_competing_intent(fd: int, path: str) -> None:
+        rename(fd, path)
+        if Path(path).name.startswith("held-"):
+            mocker.stop(publication)
+            mocker.stop(token)
+            _write_foreign_claim(winner.parent, "0" * 32, "intent")
+
+    publication = mocker.patch.object(
+        _windows, "_rename_open_claim", autospec=True, side_effect=publish_competing_intent
+    )
+    unlink = filelock._strict._unlink_in_directory
+
+    def retire_winner(
+        directory: Path,
+        name: str,
+        *,
+        claim_fd: int | None = None,
+        cancel_wait: AbstractContextManager[None] | None = None,
+    ) -> BaseException | None:
+        mocker.stop(withdrawal)
+        winner.unlink()
+        return unlink(directory, name, claim_fd=claim_fd, cancel_wait=cancel_wait)
+
+    withdrawal = mocker.patch("filelock._strict._unlink_in_directory", side_effect=retire_winner, autospec=True)
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.usefixtures("lost_windows_doorway")
+@pytest.mark.parametrize("timeout", [pytest.param(0, id="nonblocking"), pytest.param(0.05, id="timed")])
+def test_strict_soft_windows_withdraws_after_timeout(lock_path: Path, mocker: MockerFixture, timeout: float) -> None:
+    assert sys.platform == "win32"
+    import ctypes
+
+    started = threading.Event()
+    resume = threading.Event()
+    delete = filelock._strict.mark_claim_for_deletion
+
+    def delay_delete(
+        fd: int,
+        path: str,
+        private_name: Callable[[], str] | None = None,
+        *,
+        cancel_wait: AbstractContextManager[None] | None = None,
+    ) -> OSError | None:
+        if cancel_wait is not None:
+            raise ctypes.WinError(995)
+        started.set()
+        assert resume.wait(5)
+        return delete(fd, path, private_name)
+
+    mocker.patch("filelock._strict.mark_claim_for_deletion", side_effect=delay_delete, autospec=True)
+    owner = StrictSoftFileLock(lock_path)
+    try:
+        with pytest.raises(Timeout):
+            owner.acquire(timeout=timeout, poll_interval=0.005)
+        assert started.wait(5)
+        assert (owner.is_locked, sorted(claim.state for claim in owner.claims)) == (False, ["held", "intent"])
+        with pytest.raises(Timeout):
+            owner.acquire(timeout=0.05, poll_interval=0.005)
+    finally:
+        resume.set()
+    with StrictSoftFileLock(lock_path, is_singleton=False).acquire(timeout=5) as peer:
+        assert peer.is_locked
+    with owner.acquire(timeout=5):
+        assert owner.is_locked
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.usefixtures("lost_windows_doorway")
+def test_strict_soft_windows_unlimited_withdrawal(lock_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch(
+        "filelock._strict.cancelling_oplock_wait", autospec=True, side_effect=AssertionError("unbounded withdrawal")
+    )
+    with StrictSoftFileLock(lock_path).acquire(timeout=-1) as held:
+        assert held.is_locked
+    assert held.claims == ()
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.usefixtures("lost_windows_doorway")
+def test_strict_soft_windows_reports_deferred_delete_error(lock_path: Path, mocker: MockerFixture) -> None:
+    assert sys.platform == "win32"
+    import ctypes
+
+    delete = filelock._strict.mark_claim_for_deletion
+
+    def deny_held(
+        fd: int,
+        path: str,
+        private_name: Callable[[], str] | None = None,
+        *,
+        cancel_wait: AbstractContextManager[None] | None = None,
+    ) -> OSError | None:
+        if cancel_wait is not None:
+            raise ctypes.WinError(995)
+        if Path(path).name.startswith("held-"):
+            raise PermissionError(EACCES, "held deletion denied")
+        return delete(fd, path, private_name)
+
+    refusal = mocker.patch("filelock._strict.mark_claim_for_deletion", side_effect=deny_held, autospec=True)
+    owner = StrictSoftFileLock(lock_path)
+    with pytest.raises(Timeout):
+        owner.acquire(blocking=False)
+    with pytest.raises(PermissionError, match="held deletion denied"):
+        owner.acquire(timeout=5)
+    assert [claim.state for claim in owner.claims] == ["held"]
+    mocker.stop(refusal)
+    with owner.acquire(timeout=5):
+        assert owner.is_locked
+    assert owner.claims == ()
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.usefixtures("lost_windows_doorway")
+def test_strict_soft_windows_recovers_when_withdrawal_thread_cannot_start(
+    lock_path: Path, mocker: MockerFixture
+) -> None:
+    assert sys.platform == "win32"
+    import ctypes
+
+    start = threading.Thread.start
+    refused: list[threading.Thread] = []
+
+    def refuse_worker(thread: threading.Thread) -> None:
+        if thread.name == "filelock-claim-withdrawal":
+            refused.append(thread)
+            msg = "could not start withdrawal"
+            raise RuntimeError(msg)
+        start(thread)
+
+    mocker.patch.object(threading.Thread, "start", side_effect=refuse_worker, autospec=True)
+    refusal = mocker.patch("filelock._strict.mark_claim_for_deletion", side_effect=ctypes.WinError(995), autospec=True)
+    owner = StrictSoftFileLock(lock_path)
+    with pytest.raises(RuntimeError, match="could not start withdrawal"):
+        owner.acquire(blocking=False)
+    mocker.stop(refusal)
+    (worker,) = refused
+    worker.run()
+    assert sorted(claim.state for claim in owner.claims) == ["held", "intent"]
+    with owner.acquire(timeout=5):
+        assert owner.is_locked
+    assert owner.claims == ()
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.usefixtures("lost_windows_doorway")
+def test_strict_soft_windows_reports_withdrawal_worker_failure(lock_path: Path, mocker: MockerFixture) -> None:
+    assert sys.platform == "win32"
+    import ctypes
+
+    owner = StrictSoftFileLock(lock_path)
+    unlink = owner._unlink_owner_claims
+
+    def fail_worker(
+        state: filelock._strict.FileLockContext, *, deadline: float | None = None
+    ) -> tuple[list[str], list[BaseException]]:
+        if deadline is None:
+            msg = "withdrawal worker interrupted"
+            raise RuntimeError(msg)
+        return unlink(state, deadline=deadline)
+
+    interrupted = mocker.patch.object(owner, "_unlink_owner_claims", autospec=True, side_effect=fail_worker)
+    refusal = mocker.patch("filelock._strict.mark_claim_for_deletion", side_effect=ctypes.WinError(995), autospec=True)
+    with pytest.raises(Timeout):
+        owner.acquire(blocking=False)
+    with pytest.raises(RuntimeError, match="withdrawal worker interrupted"):
+        owner.acquire(timeout=5)
+    assert sorted(claim.state for claim in owner.claims) == ["held", "intent"]
+    mocker.stop(interrupted)
+    mocker.stop(refusal)
+    with owner.acquire(timeout=5):
+        assert owner.is_locked
+    assert owner.claims == ()
+
+
+@_WINDOWS_ONLY  # pragma: win32 cover
+@pytest.mark.parametrize("directory", ["resource.lock.filelock", "claims"])
+def test_windows_directory_pin_retries_after_oplock_break(  # pragma: win32 cover
+    tmp_path: Path, directory: str, mocker: MockerFixture
+) -> None:
+    assert sys.platform == "win32"
+
+    from filelock import _windows
+
+    lock = StrictSoftFileLock(tmp_path / "resource.lock", blocking=False)
+    create = _windows._nt_create
+
+    def refuse_pin(
+        path: str,
+        access: int,
+        attributes: int,
+        share: int,
+        disposition: int,
+        options: int = _windows._CREATE_OPTIONS,
+        *,
+        descriptor: ctypes.c_void_p | None = None,
+        raw: wintypes.HANDLE | None = None,
+    ) -> tuple[int, int]:
+        if Path(path).name == directory and options & _windows._FILE_COMPLETE_IF_OPLOCKED:
+            return 0, _windows._STATUS_OPLOCK_BREAK_IN_PROGRESS
+        return create(path, access, attributes, share, disposition, options, descriptor=descriptor, raw=raw)
+
+    refusal = mocker.patch.object(_windows, "_nt_create", side_effect=refuse_pin, autospec=True)
+    with pytest.raises(Timeout):
+        lock.acquire()
+    assert (lock.is_locked, lock.claims) == (False, ())
+    mocker.stop(refusal)
+    with lock:
+        assert lock.is_locked
+
+
 @_WINDOWS_ONLY  # pragma: win32 cover
 def test_strict_soft_windows_pin_failure_leaves_no_pending_cleanup(lock_path: Path, mocker: MockerFixture) -> None:
     assert sys.platform == "win32"
@@ -3182,10 +3406,10 @@ def test_strict_soft_windows_pin_failure_leaves_no_pending_cleanup(lock_path: Pa
     pin = filelock._strict._pin_claim_directory
     denials = iter((PermissionError(EACCES, "cannot pin"), OSError(EIO, "unexpected cleanup open")))
 
-    def refuse_owner_pin(directory: Path) -> ExitStack[bool | None]:
+    def refuse_owner_pin(directory: Path, *, acquiring: bool) -> ExitStack[bool | None]:
         if lock._context.owner_claim_paths:
             raise next(denials)
-        return pin(directory)
+        return pin(directory, acquiring=acquiring)
 
     failure = mocker.patch("filelock._strict._pin_claim_directory", side_effect=refuse_owner_pin, autospec=True)
     with pytest.raises(PermissionError, match="cannot pin"):

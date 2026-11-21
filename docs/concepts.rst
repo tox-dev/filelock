@@ -165,12 +165,17 @@ for a system call to start. A slow SMB rename can also be canceled, even without
 exhaust the timeout. If cleanup also stalls, a private record remains. See :ref:`how-to:Use fail-closed soft locks`
 for the scan limits and cleanup procedure.
 
-A Windows holder keeps the coordination directories open and withdraws its claims through their original handles.
+On Windows, an acquire retries if opening a coordination directory would wait for a reader to acknowledge an oplock
+break. The holder keeps the directories open and withdraws its claims through their original handles.
 Readers must allow delete sharing. Release waits for Windows to withdraw each claim and close its handle. A slow
 filesystem or a reader holding an oplock can delay release.
 On a volume without POSIX deletion, release renames a public claim to a private name before deleting it. A failed
 rename keeps the claim for a release retry. A subsequent private cleanup error reaches the caller after withdrawal.
-Acquisition also withdraws an interrupted publication by handle, with its watchdog still active.
+
+If a timed acquisition loses a race and Windows cancels withdrawal, a worker finishes removing the claims. The
+acquisition can raise :class:`~filelock.Timeout` while the worker waits. Once Windows allows withdrawal, peers can
+acquire even if the original caller never tries again. Acquisition without a deadline waits for withdrawal.
+
 On POSIX, the contender publishes through a hard link and removes each claim by name.
 
 .. versionadded:: 3.30.0

@@ -66,6 +66,7 @@ CloseErrorPolicy = Literal["default", "raise", "suppress"]
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Mapping
+    from concurrent.futures import Future
     from threading import Lock
     from types import FrameType, TracebackType
     from typing import Protocol
@@ -2177,6 +2178,9 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
 
     #: Deadline of the current acquire attempt, used while publishing Windows strict claims.
     claim_deadline: float | None = None
+
+    #: Completion of a Windows claim withdrawal that outlasted its acquisition.
+    claim_withdrawal: Future[tuple[list[str], list[BaseException]]] | None = None
 
     #: Descriptors retained for deleting published Windows claims by handle.
     claim_descriptors: dict[str, int] | None = None
