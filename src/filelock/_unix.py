@@ -17,7 +17,7 @@ import secrets
 import stat
 import sys
 import warnings
-from contextlib import ExitStack, contextmanager, suppress
+from contextlib import contextmanager, suppress
 from errno import EACCES, EAGAIN, ENOSYS, EWOULDBLOCK
 from pathlib import Path
 from typing import Final, cast
@@ -238,34 +238,41 @@ else:  # pragma: win32 no cover
         def _directory_lacks_flock(self) -> bool | None:
             opened: list[int] = []
             probes: dict[int, list[int]] = self.__dict__.setdefault("_flock_probes", {})
-            with ExitStack() as cleanup:
-                cleanup.callback(probes.pop, id(opened), None)
-                cleanup.callback(self._close_probe, opened)
-                probes[id(opened)] = opened
-                directory = Path(self._lock_path).parent
-                if anonymous := getattr(os, "O_TMPFILE", 0):  # pragma: linux cover
-                    missing = self._probe_flock(opened, str(directory), anonymous | os.O_RDWR | os.O_EXCL)
-                    if missing is not None:
-                        return missing
-                name = directory / f".filelock-probe-{secrets.token_hex(16)}"
-                cleanup.callback(self._unlink_probe, name, opened)
-                return self._probe_flock(opened, str(name), os.O_RDWR | os.O_CREAT | os.O_EXCL)
-
-        @staticmethod
-        def _close_probe(opened: list[int]) -> None:
-            if opened:
-                # Child reset and normal cleanup may both run. Retire and close once in a chain of C calls.
-                list(map(os.close, map(opened.pop, (0,))))
-
-        @staticmethod
-        def _probe_flock(opened: list[int], path: str, flags: int) -> bool | None:
             try:
-                fd = open_into(opened, path, flags, 0o600)
+                probes[id(opened)] = opened
+                return self._probe_directory(opened)
+            finally:
+                try:
+                    self._close_probe(opened)
+                finally:
+                    # An interruption on entry to close leaves the descriptor in its slot.
+                    if opened:
+                        self._close_probe(opened)
+                    probes.pop(id(opened), None)
+
+        def _probe_directory(self, opened: list[int]) -> bool | None:
+            directory = Path(self._lock_path).parent
+            if anonymous := getattr(os, "O_TMPFILE", 0):  # pragma: linux cover
+                fd = self._open_probe(opened, str(directory), anonymous | os.O_RDWR | os.O_EXCL)
+                if fd is not None:
+                    return _flock_is_missing(fd)
+            name = directory / f".filelock-probe-{secrets.token_hex(16)}"
+            try:
+                fd = self._open_probe(opened, str(name), os.O_RDWR | os.O_CREAT | os.O_EXCL)
+                self._unlink_probe(name, opened)
+            except BaseException:
+                self._unlink_probe(name, opened)
+                raise
+            return None if fd is None else _flock_is_missing(fd)
+
+        @staticmethod
+        def _open_probe(opened: list[int], path: str, flags: int) -> int | None:
+            try:
+                return open_into(opened, path, flags, 0o600)
             except OSError as exception:
                 if opened or exception.errno is None:
                     raise
                 return None
-            return _flock_is_missing(fd)
 
         @staticmethod
         def _unlink_probe(name: Path, opened: list[int]) -> None:
@@ -273,6 +280,12 @@ else:  # pragma: win32 no cover
                 with suppress(FileNotFoundError):
                     if os.path.samestat(name.lstat(), os.fstat(opened[0])):
                         name.unlink()
+
+        @staticmethod
+        def _close_probe(opened: list[int]) -> None:
+            if opened:
+                # Child reset and normal cleanup may both run. Retire and close once in a chain of C calls.
+                list(map(os.close, map(opened.pop, (0,))))
 
         def _fallback_to_soft_lock(self) -> None:
             with self._transition_lock:

@@ -148,25 +148,71 @@ def test_interrupted_probe_leaves_directory_empty(  # pragma: needs fcntl
 
 
 @NEEDS_FCNTL
+def test_named_probe_is_unlinked_before_flock(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: needs fcntl
+    mocker.patch.object(os, "O_TMPFILE", 0, create=True)
+    links: list[int] = []
+
+    def unsupported(fd: int, _operation: int) -> None:
+        links.append(os.fstat(fd).st_nlink)
+        raise OSError(ENOSYS, "no flock")
+
+    mocker.patch("filelock._unix.fcntl.flock", autospec=True, side_effect=unsupported)
+    with pytest.warns(UserWarning, match="falling back"), UnixFileLock(tmp_path / "test.lock") as lock:
+        assert cast("BreakableLock", lock).pid == os.getpid()
+    assert links == [0]
+
+
+@NEEDS_FCNTL
+@pytest.mark.parametrize(
+    "cleanup", [pytest.param("_unlink_probe", id="unlink"), pytest.param("_close_probe", id="close")]
+)
+def test_interrupted_probe_cleanup_retires_its_file(  # pragma: needs fcntl
+    tmp_path: Path, mocker: MockerFixture, cleanup: str
+) -> None:
+    mocker.patch.object(os, "O_TMPFILE", 0, create=True)
+    opened = mocker.spy(os, "open")
+
+    def interrupt(
+        frame: FrameType, event: str, _operation: BuiltinFunctionType | None
+    ) -> None:  # pragma: no cover  # profile hooks run with tracing disabled
+        if event == "call" and frame.f_code.co_name == cleanup:
+            raise KeyboardInterrupt
+
+    lock = UnixFileLock(tmp_path / "test.lock")
+    previous = sys.getprofile()
+    try:
+        sys.setprofile(interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            lock.acquire(timeout=0)
+    finally:
+        sys.setprofile(previous)
+    assert list(tmp_path.iterdir()) == []
+    with pytest.raises(OSError, match=os.strerror(EBADF)):
+        os.fstat(opened.spy_return)
+
+
+@NEEDS_FCNTL
 def test_interrupted_probe_leaves_a_replacement_alone(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:  # pragma: needs fcntl
     mocker.patch.object(os, "O_TMPFILE", 0, create=True)
     replacement = tmp_path / "replacement"
     replacement.write_bytes(b"peer")
-    probes: list[Path] = []
+    real_open = os.open
+    probes: list[str] = []
 
-    def replace_probe(_fd: int, _operation: int) -> None:
-        (probe,) = tmp_path.glob(".filelock-probe-*")
-        probes.append(probe)
-        replacement.replace(probe)
-        raise KeyboardInterrupt
+    def replace_after_open(path: str, flags: int, mode: int) -> int:
+        fd = real_open(path, flags, mode)
+        replacement.replace(path)
+        probes.append(path)
+        return fd
 
-    mocker.patch("filelock._unix.fcntl.flock", autospec=True, side_effect=replace_probe)
+    mocker.patch("os.open", autospec=True, side_effect=replace_after_open)
+    mocker.patch("filelock._unix.fcntl.flock", autospec=True, side_effect=KeyboardInterrupt)
     with pytest.raises(KeyboardInterrupt):
         UnixFileLock(tmp_path / "test.lock").acquire(timeout=0)
-    assert list(tmp_path.iterdir()) == probes
-    assert probes[0].read_bytes() == b"peer"
+    (probe,) = tmp_path.iterdir()
+    assert (str(probe), probe.read_bytes()) == (probes[0], b"peer")
 
 
 @NEEDS_FCNTL
