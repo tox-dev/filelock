@@ -918,10 +918,15 @@ def test_read_write_lock_refuses_wal_switch_during_acquire(
     execute_waiting = ReadWriteLock._execute_waiting
 
     def switch_after_journal_mode(
-        connection: _ForkSafeConnection, statements: str, timeout: float, *, blocking: bool, operation: _Operation
+        connection: _ForkSafeConnection,
+        statements: tuple[str, ...],
+        timeout: float,
+        *,
+        blocking: bool,
+        operation: _Operation,
     ) -> None:
         execute_waiting(connection, statements, timeout, blocking=blocking, operation=operation)
-        if statements == "PRAGMA journal_mode=MEMORY;":
+        if statements == ("PRAGMA journal_mode=MEMORY",):
             with closing(sqlite3.connect(lock_file)) as switched:
                 switched.executescript("PRAGMA journal_mode=WAL; PRAGMA user_version=1;")
 

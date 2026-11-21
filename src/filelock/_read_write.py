@@ -1020,24 +1020,24 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
                 # The write probe changes one header page in memory. Release rolls it back.
                 # See https://sqlite.org/lang_transaction.html#deferred_immediate_and_exclusive_transactions
                 self._execute_waiting(
-                    connection, "PRAGMA journal_mode=MEMORY;", timeout, blocking=blocking, operation=operation
+                    connection, ("PRAGMA journal_mode=MEMORY",), timeout, blocking=blocking, operation=operation
                 )
                 self._raise_if_process_changed(operation.pid)
-                statements = "BEGIN EXCLUSIVE TRANSACTION;"
+                statements = ("BEGIN EXCLUSIVE TRANSACTION",)
                 if mode == "read":
                     # A deferred read transaction needs a SELECT to acquire its shared lock.
-                    statements = "BEGIN TRANSACTION; SELECT name FROM sqlite_master LIMIT 1;"
+                    statements = ("BEGIN TRANSACTION", "SELECT name FROM sqlite_master LIMIT 1")
                 elif blocking and operation.cancel_check is None and not 0 <= timeout <= _CANCEL_POLL_INTERVAL:
                     # Reserve in NORMAL mode so a competing writer can finish. EXCLUSIVE then keeps our reservation
                     # across the empty rollback and the pending lock across busy retries.
                     self._execute_waiting(
                         connection,
-                        "BEGIN IMMEDIATE; PRAGMA locking_mode=EXCLUSIVE; ROLLBACK;",
+                        ("BEGIN IMMEDIATE", "PRAGMA locking_mode=EXCLUSIVE", "ROLLBACK"),
                         timeout,
                         blocking=blocking,
                         operation=operation,
                     )
-                    statements += " PRAGMA locking_mode=NORMAL;"
+                    statements += ("PRAGMA locking_mode=NORMAL",)
                 self._execute_waiting(connection, statements, timeout, blocking=blocking, operation=operation)
                 # SQLite rereads the header while BEGIN waits; a pre-connect check can miss a switch to WAL.
                 with closing(connection.execute("PRAGMA journal_mode;")) as cursor:
@@ -1066,14 +1066,22 @@ class ReadWriteLock(metaclass=_ReadWriteLockMeta):
 
     @staticmethod
     def _execute_waiting(
-        connection: _ForkSafeConnection, statements: str, timeout: float, *, blocking: bool, operation: _Operation
+        connection: _ForkSafeConnection,
+        statements: tuple[str, ...],
+        timeout: float,
+        *,
+        blocking: bool,
+        operation: _Operation,
     ) -> None:
         budget_ms = timeout_for_sqlite(timeout, blocking=blocking, already_waited=0)
         slice_ms = int(_CANCEL_POLL_INTERVAL * 1000)
         while True:
             remaining_ms = max(0, budget_ms - int((time.perf_counter() - operation.start_time) * 1000))
             try:
-                connection.executescript(f"PRAGMA busy_timeout={min(remaining_ms, slice_ms)}; {statements}").close()
+                # PyPy can only finalize interrupted statements at close if execute() registered them.
+                connection.execute(f"PRAGMA busy_timeout={min(remaining_ms, slice_ms)}").close()
+                for statement in statements:
+                    connection.execute(statement).close()
             except sqlite3.OperationalError as error:
                 if (
                     remaining_ms <= slice_ms

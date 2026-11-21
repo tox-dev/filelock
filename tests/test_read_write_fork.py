@@ -900,14 +900,14 @@ def test_read_write_lock_fork_beside_a_waiting_acquire_returns(tmp_path: Path) -
 @pytest.mark.parametrize(
     "boundary",
     [
-        pytest.param("executescript", id="execute"),
+        pytest.param("execute", id="execute"),
         pytest.param("rollback", id="rollback"),
         pytest.param("close", id="close"),
         pytest.param("connection-return", id="connection-return"),
     ],
 )
 def test_read_write_lock_fork_at_sqlite_boundary_exits_child(  # pragma: needs fork
-    tmp_path: Path, boundary: Literal["executescript", "rollback", "close", "connection-return"]
+    tmp_path: Path, boundary: Literal["execute", "rollback", "close", "connection-return"]
 ) -> None:
     result = _run_fork_script(
         textwrap.dedent("""

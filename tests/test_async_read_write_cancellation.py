@@ -84,7 +84,7 @@ def _patch_async_rollback(
 def _patch_async_connection(
     mocker: MockerFixture,
     *,
-    executescript: Callable[[sqlite3.Connection, str], sqlite3.Cursor] | None = None,
+    execute: Callable[[sqlite3.Connection, str], sqlite3.Cursor] | None = None,
     rollback: Callable[[sqlite3.Connection], None] | None = None,
 ) -> None:
     real_connect = sqlite3.connect
@@ -108,8 +108,8 @@ def _patch_async_connection(
         if connection_count < 2:
             return real_connection
         configuration: dict[str, Callable[[str], sqlite3.Cursor] | Callable[[], None]] = {}
-        if executescript is not None:
-            configuration["executescript.side_effect"] = functools.partial(executescript, real_connection)
+        if execute is not None:
+            configuration["execute.side_effect"] = functools.partial(execute, real_connection)
         if rollback is not None:
             configuration["rollback.side_effect"] = functools.partial(rollback, real_connection)
         connection = mocker.MagicMock(
@@ -290,12 +290,12 @@ async def test_acquire_cancellation_while_sqlite_waits_rolls_back(
         execute_started: Final[asyncio.Event] = asyncio.Event()
         loop = asyncio.get_running_loop()
 
-        def executescript(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
+        def execute(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
             if "PRAGMA journal_mode" in statement:
                 loop.call_soon_threadsafe(execute_started.set)
-            return real_connection.executescript(statement)
+            return real_connection.execute(statement)
 
-        _patch_async_connection(mocker, executescript=executescript)
+        _patch_async_connection(mocker, execute=execute)
         lock: Final[AsyncReadWriteLock] = AsyncReadWriteLock(lock_file, is_singleton=False)
         task = asyncio.create_task(getattr(lock, f"acquire_{mode}")())
         await execute_started.wait()
@@ -365,9 +365,9 @@ def _patch_async_acquire_and_rollback_failure(
     acquire_failed = False
     rollback_failed = False
 
-    def executescript(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
+    def execute(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
         nonlocal acquire_failed
-        cursor = real_connection.executescript(statement)
+        cursor = real_connection.execute(statement)
         if ("SELECT name" in statement if mode == "read" else "BEGIN EXCLUSIVE" in statement) and not acquire_failed:
             acquire_failed = True
             loop.call_soon_threadsafe(acquire_started.set)
@@ -386,7 +386,7 @@ def _patch_async_acquire_and_rollback_failure(
                 raise rollback_error  # ruff:ignore[raise-without-from-inside-except]  # exercise implicit backend context preservation
         real_connection.rollback()
 
-    _patch_async_connection(mocker, executescript=executescript, rollback=rollback)
+    _patch_async_connection(mocker, execute=execute, rollback=rollback)
     return _RollbackFailures(acquire_error, rollback_error, prior_rollback_error)
 
 
@@ -561,18 +561,17 @@ async def test_read_retried_after_its_select_waited_starts_a_fresh_transaction(
     busy_once = True
     seen_in_transaction: list[bool] = []
 
-    def executescript(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
+    def execute(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
         nonlocal busy_once
-        if "SELECT name" in statement:
-            if busy_once:
-                # A writer can take the lock between the deferred BEGIN and the SELECT that needs the shared lock.
-                busy_once = False
-                real_connection.execute("BEGIN TRANSACTION")
-                raise _busy_error()
+        if statement == "BEGIN TRANSACTION":
             seen_in_transaction.append(real_connection.in_transaction)
-        return real_connection.executescript(statement)
+        if "SELECT name" in statement and busy_once:
+            # A writer can take the lock between the deferred BEGIN and the SELECT that needs the shared lock.
+            busy_once = False
+            raise _busy_error()
+        return real_connection.execute(statement)
 
-    _patch_async_connection(mocker, executescript=executescript)
+    _patch_async_connection(mocker, execute=execute)
     # With other threads alive the acquire waits in short slices that never reach the in-place retry under test.
     mocker.patch.object(threading, "active_count", return_value=1, autospec=True)
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
@@ -580,7 +579,7 @@ async def test_read_retried_after_its_select_waited_starts_a_fresh_transaction(
     async with lock.read_lock():
         assert_read_write_lock_state(lock_file, "write", available=False)
     await lock.close()
-    assert seen_in_transaction == [False]
+    assert seen_in_transaction == [False, False]
 
 
 def _busy_error() -> sqlite3.OperationalError:
@@ -593,14 +592,14 @@ def _busy_error() -> sqlite3.OperationalError:
 async def test_write_retried_after_its_begin_waited_is_acquired(lock_file: str, mocker: MockerFixture) -> None:
     busy_once = True
 
-    def executescript(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
+    def execute(real_connection: sqlite3.Connection, statement: str) -> sqlite3.Cursor:
         nonlocal busy_once
         if "BEGIN EXCLUSIVE" in statement and busy_once:
             busy_once = False
             raise _busy_error()
-        return real_connection.executescript(statement)
+        return real_connection.execute(statement)
 
-    _patch_async_connection(mocker, executescript=executescript)
+    _patch_async_connection(mocker, execute=execute)
     mocker.patch.object(threading, "active_count", return_value=1, autospec=True)
     lock = AsyncReadWriteLock(lock_file, is_singleton=False)
 
