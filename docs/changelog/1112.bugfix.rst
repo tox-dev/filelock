@@ -1,0 +1,5 @@
+A Unix lock can fall back to a soft marker when its directory denies the temporary probe and its filesystem lacks
+atomic exchange. If native locking works in that directory, new lock files exclude group and other writes by default.
+Set an explicit mode such as ``mode=0o660`` to share a new native lock with the group.
+
+The Unix lock removes a named probe before testing the filesystem and closes its descriptor on interruption.

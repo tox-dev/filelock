@@ -533,7 +533,7 @@ def test_unrelated_acquisitions_reach_filesystem_boundary_concurrently(  # pragm
     mocker.patch("os.fstat", side_effect=wait_at_boundary, autospec=True)
 
     def acquire_lock(path: str) -> None:
-        with FileLock(path, is_singleton=False):
+        with FileLock(path, mode=0o600, is_singleton=False):
             pass
 
     workers = [
