@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from contextlib import ExitStack, contextmanager, suppress
-from errno import ENOENT, ENOTDIR, EWOULDBLOCK
+from errno import EEXIST, ENOENT, ENOTDIR, EWOULDBLOCK
 from functools import cache
 from typing import TYPE_CHECKING, Final, cast
 
@@ -39,6 +39,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         0x00000001 | 0x00000002
     )  # read | write; matches os.open (_SH_DENYNO), no delete
     _FILE_OPEN: Final[int] = 1  # open the file only if it exists; the NtCreateFile OPEN_EXISTING
+    _FILE_CREATE: Final[int] = 2  # create only when the final name does not exist
     _FILE_OPEN_IF: Final[int] = 3  # open the file if it exists, create it otherwise; the NtCreateFile OPEN_ALWAYS
     # Attribute-only access skips share-mode checks, so the probe sees a name's deletion state rather than a reader.
     _FILE_READ_ATTRIBUTES: Final[int] = 0x00000080
@@ -46,6 +47,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     _FILE_ATTRIBUTE_READONLY: Final[int] = 0x00000001
     _FILE_ATTRIBUTE_NORMAL: Final[int] = 0x00000080
     _FILE_ATTRIBUTE_REPARSE_POINT: Final[int] = 0x00000400
+    _FILE_DISPOSITION_INFO_CLASS: Final[int] = 4
     # CreateOptions: keep the handle synchronous (the CRT and msvcrt.locking rely on a maintained file position),
     # refuse a directory, return at once instead of waiting for an oplock holder to answer the break, and open a
     # reparse point rather than following it so the check below acts on the link itself.
@@ -90,6 +92,7 @@ if sys.platform == "win32":  # pragma: win32 cover
     _STATUS_OPLOCK_BREAK_IN_PROGRESS: Final[int] = 0x00000108
     _STATUS_ACCESS_DENIED: Final[int] = 0xC0000022
     _STATUS_OBJECT_NAME_NOT_FOUND: Final[int] = 0xC0000034
+    _STATUS_OBJECT_NAME_COLLISION: Final[int] = 0xC0000035
     _STATUS_OBJECT_PATH_NOT_FOUND: Final[int] = 0xC000003A
     _STATUS_SHARING_VIOLATION: Final[int] = 0xC0000043
     _STATUS_DELETE_PENDING: Final[int] = 0xC0000056
@@ -198,6 +201,18 @@ if sys.platform == "win32":  # pragma: win32 cover
     _KERNEL32.CancelSynchronousIo.restype = wintypes.BOOL
     _KERNEL32.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(_BY_HANDLE_FILE_INFORMATION)]
     _KERNEL32.GetFileInformationByHandle.restype = wintypes.BOOL
+    _KERNEL32.WriteFile.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+    ]
+    _KERNEL32.WriteFile.restype = wintypes.BOOL
+    _KERNEL32.ReOpenFile.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD]
+    _KERNEL32.ReOpenFile.restype = wintypes.HANDLE
+    _KERNEL32.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    _KERNEL32.SetFileInformationByHandle.restype = wintypes.BOOL
     _KERNEL32.LockFileEx.argtypes = [
         wintypes.HANDLE,
         wintypes.DWORD,
@@ -407,6 +422,57 @@ if sys.platform == "win32":  # pragma: win32 cover
         share = _FILE_SHARE_ALL if share_delete else _FILE_SHARE_READ_WRITE
         return _open_existing_without_oplock_wait(path, _GENERIC_READ | _SYNCHRONIZE, os.O_RDONLY, share)
 
+    def create_exclusive_non_reparse_fd(path: str, opened: list[int]) -> int:
+        # FILE_CREATE checks the final name itself, including a dangling symlink.
+        sys.audit("open", path, None, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_TRUNC)
+        raw = wintypes.HANDLE()
+        try:
+            handle, status = _nt_create(
+                path,
+                _GENERIC_WRITE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
+                _FILE_ATTRIBUTE_NORMAL,
+                _FILE_SHARE_READ_WRITE,
+                _FILE_CREATE,
+                raw=raw,
+            )
+            if status == _STATUS_OBJECT_NAME_COLLISION:
+                raise FileExistsError(EEXIST, os.strerror(EEXIST), path)
+            if status != _STATUS_SUCCESS:
+                raise _status_error(status, path)
+            # Ownership reaches the rollback list before Python can deliver a pending signal.
+            opened.extend(map(msvcrt.open_osfhandle, (handle,), (os.O_WRONLY | os.O_NOINHERIT,)))
+        finally:
+            if raw.value and not opened:
+                _discard_created_marker(raw.value, path)
+        return opened[0]
+
+    def _discard_created_marker(handle: int, path: str) -> None:
+        # A marker held with DELETE access would exclude ordinary readers. Pin the file through its create handle
+        # before closing it, then request DELETE on that same file after our deny-delete handle is gone.
+        pins: list[int] = []
+        deletes: list[int] = []
+        try:
+            try:
+                # If a reader denies deletion, a later acquire can reclaim a malformed record. An empty record
+                # belongs to a legacy holder and cannot be removed on age alone.
+                _KERNEL32.WriteFile(handle, b"\n", 1, ctypes.byref(wintypes.DWORD()), None)
+                pins.extend(map(_KERNEL32.ReOpenFile, (handle,), (0,), (_FILE_SHARE_ALL,), (0,)))
+            finally:
+                _KERNEL32.CloseHandle(handle)
+            if pins[0] != _INVALID_HANDLE_VALUE:
+                with cancelling_oplock_wait():
+                    deletes.extend(map(_KERNEL32.ReOpenFile, pins, (_DELETE,), (_FILE_SHARE_ALL,), (0,)))
+                    if deletes[0] != _INVALID_HANDLE_VALUE:
+                        sys.audit("os.remove", path, None)
+                        delete = ctypes.c_byte(1)
+                        _KERNEL32.SetFileInformationByHandle(
+                            deletes[0], _FILE_DISPOSITION_INFO_CLASS, ctypes.byref(delete), ctypes.sizeof(delete)
+                        )
+        finally:
+            for owned in (*deletes, *pins):
+                if owned != _INVALID_HANDLE_VALUE:
+                    _KERNEL32.CloseHandle(owned)
+
     def open_for_delete_without_oplock_wait(path: str) -> int:
         # Open *path* with delete access and return a descriptor, without waiting for an oplock holder to answer.
         #
@@ -599,6 +665,7 @@ if sys.platform == "win32":  # pragma: win32 cover
         options: int = _CREATE_OPTIONS,
         *,
         descriptor: ctypes.c_void_p | None = None,
+        raw: wintypes.HANDLE | None = None,
     ) -> tuple[int, int]:
         # Open *path* through ``NtCreateFile`` and return ``(handle, status)``.
         #
@@ -617,7 +684,7 @@ if sys.platform == "win32":  # pragma: win32 cover
             object_attributes.ObjectName = ctypes.pointer(nt_name)
             object_attributes.Attributes = _OBJ_CASE_INSENSITIVE
             object_attributes.SecurityDescriptor = descriptor
-            handle = wintypes.HANDLE()
+            handle = wintypes.HANDLE() if raw is None else raw
             io_status = _IO_STATUS_BLOCK()
             status = (
                 _NTDLL.NtCreateFile(
@@ -637,7 +704,8 @@ if sys.platform == "win32":  # pragma: win32 cover
             )
         finally:
             _NTDLL.RtlFreeUnicodeString(ctypes.byref(nt_name))
-        if status == _STATUS_OPLOCK_BREAK_IN_PROGRESS:
+        # Exclusive creation owns its output handle from the syscall until descriptor conversion or rollback.
+        if status == _STATUS_OPLOCK_BREAK_IN_PROGRESS and raw is None:
             _KERNEL32.CloseHandle(handle)
         if status != _STATUS_SUCCESS:
             return 0, status
@@ -789,6 +857,7 @@ else:  # pragma: win32 no cover
 __all__ = [
     "WindowsFileLock",
     "cancelling_oplock_wait",
+    "create_exclusive_non_reparse_fd",
     "directory_is_private",
     "identity_at",
     "identity_of_fd",

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Final, Literal, NoReturn, Protocol, TypedDict,
 import pytest
 
 import filelock._lease as lease_mod
+import filelock._soft as soft_mod
 from filelock import (
     AsyncSoftFileLease,
     FileLock,
@@ -1411,7 +1412,11 @@ def test_lease_dropped_while_its_heartbeat_finds_the_claim_lost_reports_nothing(
         )
     ]
     before: Final[set[Thread]] = _lease_heartbeats()
-    open_spy = mocker.spy(os, "open")
+    open_spy = (
+        mocker.spy(soft_mod, "create_exclusive_non_reparse_fd")
+        if sys.platform == "win32"  # pragma: win32 cover
+        else mocker.spy(os, "open")
+    )
     leases[0].acquire()
     heartbeats: Final[set[Thread]] = _lease_heartbeats() - before
     lease_fd = open_spy.spy_return
