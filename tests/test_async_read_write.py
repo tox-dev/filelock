@@ -327,6 +327,34 @@ async def test_close_shuts_down_owned_executor(lock_file: str) -> None:
         executor.submit(int)
 
 
+@pytest.mark.parametrize("shut_down", [pytest.param(False, id="available"), pytest.param(True, id="shut-down")])
+def test_close_leaves_the_default_executor_idle(lock_file: str, *, shut_down: bool) -> None:
+    async def run() -> None:
+        started = threading.Event()
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1, initializer=started.set))
+        lock = AsyncReadWriteLock(lock_file, is_singleton=False)
+        worker = await asyncio.wrap_future(lock.executor.submit(threading.current_thread))
+        if shut_down:
+            await loop.shutdown_default_executor()
+        await lock.close()
+
+        assert not worker.is_alive()
+        assert not started.is_set()
+
+    asyncio.run(run())
+
+
+@pytest.mark.asyncio
+async def test_closing_an_unused_singleton_starts_no_worker(lock_file: str, mocker: MockerFixture) -> None:
+    lock = AsyncReadWriteLock(lock_file)
+    started = mocker.spy(threading.Thread, "start")
+    await lock.close()
+    started.assert_not_called()
+    with pytest.raises(RuntimeError, match="shutdown"):
+        lock.executor.submit(int)
+
+
 @pytest.mark.asyncio
 async def test_close_keeps_provided_executor_open(lock_file: str) -> None:
     executor = ThreadPoolExecutor(max_workers=1)

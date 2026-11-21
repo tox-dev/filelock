@@ -39,6 +39,7 @@ from ._api import (
 )
 from ._async import (
     TASKS_THREAD_ID,
+    AsyncClose,
     BackendOutcome,
     drain_future,
     future_result,
@@ -101,6 +102,7 @@ class AsyncReadWriteLock:
         self._creator_pid = creator_pid
         self._fork_invalidated = False
         self._closed = False
+        self._close_state = AsyncClose()
         self._closing: ConcurrentFuture[None] | None = None
         self._owns_backend = not is_singleton
         #: Marks the task holds taken through this wrapper, which its close() ends.
@@ -381,7 +383,7 @@ class AsyncReadWriteLock:
         """
         End the holds of the tasks that acquired through this instance and release the lock once no task holds it.
         A contended backend acquire stops on its next poll after close starts.
-        A successful close wakes tasks waiting for this wrapper's turn in the shared ownership table.
+        Closing wakes tasks waiting to acquire through this wrapper and joins the worker if the wrapper owns it.
 
         After calling this method, the lock instance is no longer usable. With ``is_singleton=False`` it also closes the
         underlying SQLite connection. A singleton wrapper leaves the shared :class:`ReadWriteLock` open, so tasks that
@@ -396,6 +398,9 @@ class AsyncReadWriteLock:
         ensure_current_process()
         if self._inherited:  # pragma: needs fork
             return
+        await self._close_state.close(self._retire, self._executor if self._owns_executor else None)
+
+    async def _retire(self) -> None:
         if self._closed:
             return
         # Refuse acquires from here on, so none is admitted into a hold the backend is letting go of.
@@ -418,10 +423,6 @@ class AsyncReadWriteLock:
             self._closing = None
             closing.set_result(None)
             self._owners.wake_via(self._via)
-        # Wait for the worker to exit rather than letting it drain in the background: a caller that forks right
-        # after closing deserves a single-threaded process, and os.fork warns about any surviving thread.
-        if self._owns_executor:
-            await asyncio.to_thread(functools.partial(self._executor.shutdown, wait=True))
 
     def _shutdown_owned_executor(self) -> None:
         if self._owns_executor:

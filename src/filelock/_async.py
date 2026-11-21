@@ -37,7 +37,7 @@ from ._error import Timeout
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Hashable
-    from concurrent.futures import Executor
+    from concurrent.futures import Executor, ThreadPoolExecutor
 
     from ._read_write import ReadWriteLock
     from ._soft_rw import SoftReadWriteLock
@@ -47,6 +47,32 @@ _T = TypeVar("_T")
 #: The holder an async wrapper records its backend level under. No thread has this identifier, so sync code on the
 #: executor thread that took the level cannot re-enter or release it.
 TASKS_THREAD_ID: Final[int] = 0
+
+
+class AsyncClose:
+    def __init__(self) -> None:
+        self._gate = AsyncTransitionGate()
+        self._join: tuple[ThreadPoolExecutor, ConcurrentFuture[None]] | None = None
+
+    async def close(self, retire: Callable[[], Awaitable[None]], executor: Executor | None) -> None:
+        async with self._gate.hold():
+            await retire()
+            if executor is None:
+                return
+            if self._join is None:
+                pool = cast("ThreadPoolExecutor", executor)
+                pool.shutdown(wait=False)
+                if not pool._threads:  # ruff:ignore[private-member-access]  # only the pool tracks its workers
+                    return
+                # A queued job may still need the event loop after its default executor shuts down.
+                joiner = type(pool)(max_workers=1)
+                try:
+                    self._join = joiner, joiner.submit(pool.shutdown)
+                finally:
+                    joiner.shutdown(wait=False)
+            joiner, joined = self._join
+        await asyncio.shield(asyncio.wrap_future(joined))
+        joiner.shutdown()
 
 
 class AsyncTransitionGate:
@@ -598,6 +624,7 @@ async def capture_awaitable(awaitable: Awaitable[_T]) -> BackendOutcome[_T]:
 
 __all__ = [
     "TASKS_THREAD_ID",
+    "AsyncClose",
     "AsyncTransitionGate",
     "AsyncTransitionUnavailableError",
     "BackendOutcome",
