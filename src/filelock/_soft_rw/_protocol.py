@@ -88,8 +88,8 @@ class _Files(Protocol):
         # Hard-link *source* to *target* without replacing; ``True`` when *target* names *source*'s file afterwards.
         ...
 
-    def replace(self, source: str, target: str) -> bool:
-        # Rename *source* over *target* atomically; ``False`` when the platform refused because *target* is in use.
+    def write_head(self, path: str, temporary: str, data: bytes) -> None:
+        # Stage HEAD's bytes under a private sibling name before replacing the reader's hint.
         ...
 
     def overwrite(self, path: str, data: bytes, identity: tuple[int, int], header: bytes) -> bool:
@@ -325,7 +325,7 @@ class GenerationLog:
         # move HEAD back past later commits, so HEAD only ever moves forward.
         with suppress(OSError):
             if (epoch := self._valid_epoch()) is not None and (self._head_generation() or 0) < successor.generation:
-                self._publish(self._head_path, epoch + data)
+                self._files.write_head(self._head_path, f"{_TEMPORARY_PREFIX}{new_token()}", epoch + data)
         if (expired := successor.generation - _RETAINED_GENERATIONS - 1) > 0:
             self._compact_through(expired, successor.generation)
         return True
@@ -338,18 +338,14 @@ class GenerationLog:
         return self._head_record() is None
 
     def _publish(self, target: str, data: bytes) -> bool:
-        generation = target != self._head_path
         temporary = str(self._directory / f"{_TEMPORARY_PREFIX}{new_token()}")
         try:
-            self._files.create(temporary, data, durable=generation)
+            self._files.create(temporary, data, durable=True)
         except FileNotFoundError:
             # If only gen/ vanished, the holder record still exists and won't trigger directory creation on retry.
-            if generation:
-                self._files.prepare(str(self._directory.parent), force=True)
+            self._files.prepare(str(self._directory.parent), force=True)
             return False
         try:
-            if not generation:
-                return self._files.replace(temporary, target)
             # A reset before staging can leave the private file in a new log. A reset after this check takes the
             # private name with the old directory, so a link in the new log has no source.
             if self._files.read(self._epoch_path) != self._epoch:
