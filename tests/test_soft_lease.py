@@ -268,6 +268,86 @@ class _Reports:
         self.landed.set()
 
 
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+@pytest.mark.requires_hard_links  # pragma: needs hard-link
+def test_lease_reports_missing_marker_with_another_hard_link(marker: Path) -> None:
+    reports = _Reports()
+
+    with _lease(marker, on_compromise=reports):
+        os.link(marker, other := marker.with_name("other"))
+        marker.unlink()
+        assert reports.landed.wait(_DURATION * 3)
+        assert other.exists()
+
+    assert [compromise.reason for compromise in reports.seen] == ["marker-missing"]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows refuses to rename a directory holding an open file"
+)  # pragma: win32 no cover
+def test_lease_retries_when_missing_markers_parent_cannot_be_read(tmp_path: Path, mocker: MockerFixture) -> None:
+    marker = tmp_path / "original" / "a.lock"
+    marker.parent.mkdir()
+    reports = _Reports()
+    lease = _lease(marker, on_compromise=reports)
+    lease.acquire()
+    marker.parent.rename(tmp_path / "renamed")
+    real_lstat = os.lstat
+
+    def lstat(path: str | os.PathLike[str]) -> os.stat_result:
+        if os.fspath(path) == str(marker.parent):
+            raise OSError(EIO, "Input/output error")
+        return real_lstat(path)
+
+    mocker.patch("filelock._lease.os.lstat", autospec=True, side_effect=lstat)
+    try:
+        assert reports.landed.wait(_DEADLINE)
+    finally:
+        mocker.stopall()
+        lease.release()
+
+    assert len(reports.seen) == 1
+    assert isinstance((error := reports.seen[0].error), OSError)
+    assert (reports.seen[0].reason, error.errno) == ("refresh-failed", EIO)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires a Windows directory junction")  # pragma: win32 cover
+@pytest.mark.parametrize(
+    "parent_errno", [pytest.param(None, id="missing-parent"), pytest.param(EIO, id="unreadable-parent")]
+)
+def test_lease_reports_refresh_failure_after_junction_removed(
+    tmp_path: Path, create_junction: Callable[[Path, Path], None], mocker: MockerFixture, parent_errno: int | None
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    junction = tmp_path / "junction"
+    create_junction(junction, target)
+    marker = junction / "a.lock"
+    reports = _Reports()
+    lease = _lease(marker, on_compromise=reports)
+    lease.acquire()
+    real_lstat = os.lstat
+
+    def lstat(path: str | os.PathLike[str]) -> os.stat_result:
+        if os.fspath(path) == str(junction) and parent_errno is not None:
+            raise OSError(parent_errno, os.strerror(parent_errno), str(junction))
+        return real_lstat(path)
+
+    mocker.patch("filelock._lease.os.lstat", autospec=True, side_effect=lstat)
+
+    try:
+        junction.rmdir()
+        assert (target / marker.name).exists()
+        assert reports.landed.wait(_DEADLINE)
+    finally:
+        mocker.stopall()
+        lease.release()
+
+    assert len(reports.seen) == 1
+    assert isinstance((error := reports.seen[0].error), OSError)
+    assert (reports.seen[0].reason, error.errno) == ("refresh-failed", parent_errno or ENOENT)
+
+
 @NEEDS_UNLINK_OPEN_FILE
 def test_lease_reports_compromise_when_a_peer_takes_over(marker: Path) -> None:  # pragma: needs unlink-open-file
     reports = _Reports()
@@ -298,7 +378,7 @@ def test_lease_reports_compromise_when_a_refresh_fails(marker: Path, mocker: Moc
 
 
 class _RefreshCall(Protocol):
-    def __call__(self, path: str, *args: object, **kwargs: object) -> os.stat_result | None: ...
+    def __call__(self, path: str | os.PathLike[str], *args: object, **kwargs: object) -> os.stat_result | None: ...
 
 
 @pytest.mark.parametrize(
@@ -313,8 +393,8 @@ def test_lease_tolerates_a_transient_refresh_error(
     ticks = itertools.count()
     refreshes: Final[Semaphore] = Semaphore(0)
 
-    def flaky(path: str, *args: object, **kwargs: object) -> os.stat_result | None:
-        marked = path.endswith(marker.name)
+    def flaky(path: str | os.PathLike[str], *args: object, **kwargs: object) -> os.stat_result | None:
+        marked = os.fspath(path).endswith(marker.name)
         try:
             if marked and next(ticks) < 2:
                 raise OSError(EIO, "Input/output error")
@@ -411,6 +491,211 @@ def _wait_until(condition: Callable[[], bool]) -> None:
     deadline: Final[float] = time.monotonic() + _DURATION * 20
     while not condition() and time.monotonic() < deadline:
         time.sleep(_HEARTBEAT / 2)  # simplint: ignore[sleep-in-test]  # needs a compromise signal
+
+
+@NEEDS_UNLINK_OPEN_FILE  # pragma: needs unlink-open-file
+def test_lease_release_records_a_missing_marker_before_the_next_heartbeat(
+    marker: Path,
+) -> None:
+    reports = _Reports()
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=29, on_compromise=reports)
+
+    with lease:
+        token = lease.token
+        assert token is not None
+        marker.unlink()
+
+    assert lease.compromise == LeaseCompromise(lock_file=str(marker), token=token, reason="marker-missing")
+    assert reports.seen == []
+
+
+@NEEDS_UNLINK_OPEN_FILE
+def test_lease_release_records_a_replacement_before_the_next_heartbeat(  # pragma: needs unlink-open-file
+    marker: Path,
+) -> None:
+    reports = _Reports()
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=29, on_compromise=reports)
+    peer = SoftFileLease(marker, timeout=0, lease_duration=30, heartbeat_interval=29)
+
+    try:
+        with lease:
+            token = lease.token
+            assert token is not None
+            marker.unlink()
+            peer.acquire()
+        assert lease.compromise == LeaseCompromise(lock_file=str(marker), token=token, reason="owner-changed")
+        assert reports.seen == []
+    finally:
+        peer.release()
+
+
+@pytest.mark.requires_hard_links  # pragma: needs hard-link
+@NEEDS_UNLINK_OPEN_FILE
+def test_lease_release_records_a_missing_marker_with_an_extra_link(  # pragma: needs unlink-open-file
+    marker: Path,
+) -> None:
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=29)
+    alias = marker.with_name("alias")
+
+    with lease:
+        token = lease.token
+        assert token is not None
+        os.link(marker, alias)
+        marker.unlink()
+
+    assert lease.compromise == LeaseCompromise(lock_file=str(marker), token=token, reason="marker-missing")
+    alias.unlink()
+
+
+@NEEDS_UNLINK_OPEN_FILE
+def test_lease_release_records_a_replacement_with_an_unrelated_break_name(  # pragma: needs unlink-open-file
+    marker: Path,
+) -> None:
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=29)
+    peer = SoftFileLease(marker, timeout=0, lease_duration=30, heartbeat_interval=29)
+    alias = marker.with_name("alias")
+    unrelated_break = marker.with_name(f"{marker.name}.break.{os.getpid()}.00000000000000000000000000000000")
+    unrelated_break.write_text("unrelated", encoding="utf-8")
+
+    try:
+        with lease:
+            token = lease.token
+            assert token is not None
+            marker.rename(alias)
+            peer.acquire()
+        assert lease.compromise == LeaseCompromise(lock_file=str(marker), token=token, reason="owner-changed")
+    finally:
+        peer.release()
+        alias.unlink()
+        unrelated_break.unlink()
+
+
+@NEEDS_UNLINK_OPEN_FILE
+def test_lease_release_records_loss_after_the_first_heartbeat_miss(  # pragma: needs unlink-open-file
+    marker: Path, mocker: MockerFixture
+) -> None:
+    first_miss = Event()
+    reports = _Reports()
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=2, on_compromise=reports)
+    peer = SoftFileLease(marker, timeout=0, lease_duration=30, heartbeat_interval=29)
+
+    try:
+        with lease:
+            token = lease.token
+            assert token is not None
+            held = os.lstat(marker)
+            original_lstat = os.lstat
+            holder_thread = threading.current_thread()
+
+            def signal_first_miss(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
+                result = original_lstat(path, dir_fd=dir_fd)
+                if (
+                    os.fspath(path) == str(marker)
+                    and threading.current_thread() is not holder_thread
+                    and (result.st_dev, result.st_ino) != (held.st_dev, held.st_ino)
+                ):
+                    first_miss.set()
+                return result
+
+            mocker.patch("filelock._lease.os.lstat", side_effect=signal_first_miss, autospec=True)
+            marker.unlink()
+            peer.acquire()
+            assert first_miss.wait(5)
+            assert reports.seen == []
+        assert lease.compromise == LeaseCompromise(lock_file=str(marker), token=token, reason="owner-changed")
+        assert reports.seen == []
+    finally:
+        peer.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot rename an open marker")
+def test_lease_release_does_not_report_a_provisional_break(marker: Path) -> None:  # pragma: win32 no cover
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=29)
+    aside = marker.with_name(f"{marker.name}.break.{os.getpid()}.pending")
+
+    with lease:
+        marker.rename(aside)
+        marker.write_text("peer", encoding="utf-8")
+
+    assert lease.compromise is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot rename an open marker")
+def test_lease_release_does_not_report_a_rolled_back_break(  # pragma: win32 no cover
+    marker: Path, mocker: MockerFixture
+) -> None:
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=29)
+    aside = marker.with_name(f"{marker.name}.break.{os.getpid()}.pending")
+    fstat = os.fstat
+    first = iter([True])
+
+    def restore(fd: int) -> os.stat_result:
+        if next(first, False):
+            marker.unlink()
+            aside.rename(marker)
+        return fstat(fd)
+
+    with lease:
+        marker.rename(aside)
+        marker.write_text("peer", encoding="utf-8")
+        mocker.patch("filelock._lease.os.fstat", side_effect=restore, autospec=True)
+
+    assert lease.compromise is None
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot rename a directory with an open marker")
+def test_lease_release_does_not_report_a_renamed_directory(marker: Path) -> None:  # pragma: win32 no cover
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=29)
+    moved = marker.parent.with_name(f"{marker.parent.name}-moved")
+
+    with lease:
+        marker.parent.rename(moved)
+
+    assert lease.compromise is None
+    (moved / marker.name).unlink()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot rename a directory with an open marker")
+def test_lease_release_does_not_report_a_restored_directory(  # pragma: win32 no cover
+    marker: Path, mocker: MockerFixture
+) -> None:
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=29)
+    moved = marker.parent.with_name(f"{marker.parent.name}-moved")
+    fstat = os.fstat
+    first = iter([True])
+
+    def restore(fd: int) -> os.stat_result:
+        if next(first, False):
+            moved.rename(marker.parent)
+        return fstat(fd)
+
+    with lease:
+        marker.parent.rename(moved)
+        mocker.patch("filelock._lease.os.fstat", side_effect=restore, autospec=True)
+
+    assert lease.compromise is None
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Release probes the marker only on POSIX")
+def test_lease_release_does_not_report_an_unreadable_marker(
+    marker: Path, mocker: MockerFixture
+) -> None:  # pragma: win32 no cover
+    lease = SoftFileLease(marker, lease_duration=30, heartbeat_interval=29)
+    lstat = os.lstat
+    first = iter([True])
+
+    def fail_once(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
+        if os.fspath(path) == str(marker) and next(first, False):
+            raise OSError(EIO, "Input/output error")
+        return lstat(path, dir_fd=dir_fd)
+
+    with lease:
+        mocker.patch("filelock._lease.os.lstat", side_effect=fail_once, autospec=True)
+
+    assert lease.compromise is None
+    assert not marker.exists()
 
 
 def test_lease_holds_an_uncompromised_claim(marker: Path, mocker: MockerFixture) -> None:
@@ -870,8 +1155,8 @@ def test_lease_reports_marker_missing_when_a_refresh_cannot_stat_it(marker: Path
     real_fstat = os.fstat
     missing = False
 
-    def lstat(path: str) -> os.stat_result:
-        if missing and path.endswith(marker.name):
+    def lstat(path: str | os.PathLike[str]) -> os.stat_result:
+        if missing and os.fspath(path).endswith(marker.name):
             raise FileNotFoundError(ENOENT, "No such file or directory", marker.name)
         return real_lstat(path)
 
@@ -902,9 +1187,9 @@ def test_lease_reports_refresh_failed_when_a_missing_marker_cannot_be_inspected(
     missing = False
     name_lost = False
 
-    def lstat(path: str) -> os.stat_result:
+    def lstat(path: str | os.PathLike[str]) -> os.stat_result:
         nonlocal name_lost
-        if missing and path.endswith(marker.name):
+        if missing and os.fspath(path).endswith(marker.name):
             name_lost = True
             raise FileNotFoundError(ENOENT, "No such file or directory", marker.name)
         return real_lstat(path)
@@ -936,9 +1221,9 @@ def test_lease_rides_out_a_marker_missing_for_one_refresh(marker: Path, mocker: 
     misses = iter([True])
     refreshes: Final[Semaphore] = Semaphore(0)
 
-    def lstat(path: str) -> os.stat_result:
+    def lstat(path: str | os.PathLike[str]) -> os.stat_result:
         refreshes.release()
-        if path.endswith(marker.name) and next(misses, False):
+        if os.fspath(path).endswith(marker.name) and next(misses, False):
             raise FileNotFoundError(ENOENT, "No such file or directory", marker.name)
         return real_lstat(path)
 
@@ -1134,8 +1419,8 @@ def test_lease_dropped_while_its_heartbeat_finds_the_claim_lost_reports_nothing(
     real_fstat = os.fstat
     misses: Final[itertools.count[int]] = itertools.count()
 
-    def lstat(path: str) -> os.stat_result:
-        if leases and path.endswith(marker.name):
+    def lstat(path: str | os.PathLike[str]) -> os.stat_result:
+        if leases and os.fspath(path).endswith(marker.name):
             # A single miss may be a peer's break in flight, so the loss only counts on the second.
             if next(misses):
                 leases.clear()

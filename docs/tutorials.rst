@@ -436,8 +436,9 @@ claim by age, so a crashed holder's claim is cleared only by an operator:
         stale.force_break(claim.name)
 
 :class:`SoftFileLease <filelock.SoftFileLease>` trades exclusion for progress. Its claim expires, so a peer can take over
-if a holder wedges; a callback fires when this process loses its claim. A lease token names a claim but does not fence
-the protected resource, so fence any resource an expired holder could still write:
+if a holder wedges. The heartbeat calls back when it detects a lost claim while work runs. Release can also record loss
+in :attr:`compromise <filelock.SoftFileLease.compromise>` after work ends, without calling back. A lease token names a
+claim but does not fence the protected resource, so fence any resource an expired holder could still write:
 
 .. code-block:: python
 

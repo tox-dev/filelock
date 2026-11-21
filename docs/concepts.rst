@@ -652,9 +652,9 @@ Ownership scope per lock
        :meth:`force_break <filelock.StrictSoftFileLock.force_break>`. This is the fail-closed contract.
    * - :class:`SoftFileLease <filelock.SoftFileLease>`
      - A claim that *expires*; a peer may take it while the previous holder still runs
-     - A heartbeat refreshes the claim; ``on_compromise`` fires when it is lost. Overlap is permitted by design, so a
-       lease is a hint about who *should* work, not a guarantee that only one worker does. A forked child holds no
-       claim.
+     - A heartbeat refreshes the claim and calls ``on_compromise`` when it detects loss. Release can record a loss in
+       ``compromise`` without calling back. Overlap is permitted by design, so a lease is a hint about who *should* work,
+       not a guarantee that only one worker does. A forked child holds no claim.
    * - :class:`ReadWriteLock <filelock.ReadWriteLock>`
      - The acquisition object; state lives in a local SQLite database
      - Requires a local filesystem the SQLite VFS supports. A forked child must build a fresh instance. Crash recovery
@@ -718,7 +718,7 @@ claim by age, a strict lock needs no liveness guess; a claim it cannot read with
 
 A :class:`SoftFileLease <filelock.SoftFileLease>` can expire while its holder is still working. If the heartbeat
 detects a lost claim, it calls ``on_compromise``. Further acquires on that instance raise ``RuntimeError`` until the
-holder releases it.
+holder releases it. If release discovers the loss, it records ``compromise`` after the work ends.
 
 The :attr:`token <filelock.SoftFileLease.token>` identifies the claim. It does **not** fence the protected resource.
 A paused holder can resume and write after another process takes the lease. Fencing requires a linearizable resource
