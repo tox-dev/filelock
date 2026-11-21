@@ -3,6 +3,7 @@ from __future__ import annotations
 import itertools
 import os
 import re
+import signal
 import struct
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # only fixed-argument, no-shell runs below
 import sys
@@ -11,7 +12,7 @@ import time
 from contextlib import ExitStack, closing
 from errno import EWOULDBLOCK
 from importlib import import_module
-from multiprocessing import Event, Process, Value, set_start_method
+from multiprocessing import Event, Process, Value, get_context, set_start_method
 from pathlib import Path
 from textwrap import dedent
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -32,6 +33,7 @@ from filelock._read_write import _ForkSafeConnection
 from tests.capability_marks import (
     NEEDS_FIFO,
     NEEDS_FOREIGN_STICKY_TMP,
+    NEEDS_POSIX_SIGNALS,
     NEEDS_SYMLINK,
     SKIP_ON_UNRELIABLE_PROCESS_SYNC,
 )
@@ -180,6 +182,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Generator
     from multiprocessing.sharedctypes import Synchronized
     from multiprocessing.synchronize import Event as EventType
+    from types import FrameType
 
     from pytest_mock import MockerFixture
 
@@ -449,6 +452,52 @@ def _write_intent_pending(prober: ReadWriteLock, deadline: float) -> bool:
     assert time.monotonic() < deadline, "Writer never registered its write intent"
     time.sleep(0.05)  # simplint: ignore[sleep-in-test]  # needs a write-intent signal
     return True
+
+
+@NEEDS_POSIX_SIGNALS  # pragma: needs posix-signals
+@pytest.mark.timeout(_PROCESS_DEADLINE * 3)
+def test_single_threaded_writer_handles_signal_while_readers_hold_lock(lock_file: str) -> None:
+    context = get_context("spawn")
+    held, release = context.Event(), context.Event()
+    reader = context.Process(target=acquire_lock, args=(lock_file, "read", held, release))
+    waiter = context.Process(target=_interrupt_waiting_writer, args=(lock_file,))
+    with cleanup_processes([reader, waiter]), closing(ReadWriteLock(lock_file)) as prober:
+        reader.start()
+        assert held.wait(_PROCESS_DEADLINE)
+        waiter.start()
+        deadline = time.monotonic() + _PROCESS_DEADLINE
+        while _write_intent_pending(prober, deadline):
+            pass
+        waiter.terminate()
+        waiter.join(timeout=5)
+        assert waiter.exitcode == 0
+        release.set()
+
+
+def _interrupt_waiting_writer(lock_file: str) -> None:  # pragma: needs posix-signals
+    with closing(ReadWriteLock(lock_file)) as waiter, closing(ReadWriteLock(lock_file, is_singleton=False)) as peer:
+
+        def stop(_signum: int, _frame: FrameType | None) -> None:
+            with pytest.raises(Timeout):
+                peer.acquire_read(blocking=False)
+            raise KeyboardInterrupt
+
+        signal.signal(signal.SIGTERM, stop)
+        with pytest.raises(KeyboardInterrupt):
+            waiter.acquire_write()
+        with pytest.raises(RuntimeError, match="not held"):
+            waiter.release()
+        peer.acquire_read(blocking=False)
+        peer.release()
+
+
+def test_writer_timeout_releases_pending_lock(lock_file: str) -> None:
+    with ReadWriteLock(lock_file).read_lock(), closing(ReadWriteLock(lock_file, is_singleton=False)) as writer:
+        with pytest.raises(Timeout):
+            writer.acquire_write(timeout=0.25)
+        with pytest.raises(RuntimeError, match="not held"):
+            writer.release()
+        assert_read_write_lock_state(lock_file, "read", available=True)
 
 
 @pytest.mark.parametrize(
@@ -868,15 +917,15 @@ def test_read_write_lock_refuses_wal_switch_during_acquire(
     lock = ReadWriteLock(lock_file, is_singleton=False)
     execute_waiting = ReadWriteLock._execute_waiting
 
-    def switch_then_execute(
+    def switch_after_journal_mode(
         connection: _ForkSafeConnection, statements: str, timeout: float, *, blocking: bool, operation: _Operation
     ) -> None:
-        if statements.startswith("BEGIN"):
+        execute_waiting(connection, statements, timeout, blocking=blocking, operation=operation)
+        if statements == "PRAGMA journal_mode=MEMORY;":
             with closing(sqlite3.connect(lock_file)) as switched:
                 switched.executescript("PRAGMA journal_mode=WAL; PRAGMA user_version=1;")
-        execute_waiting(connection, statements, timeout, blocking=blocking, operation=operation)
 
-    mocker.patch.object(ReadWriteLock, "_execute_waiting", new=staticmethod(switch_then_execute))
+    mocker.patch.object(ReadWriteLock, "_execute_waiting", new=staticmethod(switch_after_journal_mode))
     with pytest.raises(ValueError, match="switched to WAL mode while acquiring"):
         getattr(lock, f"acquire_{mode}")()
     with pytest.raises(RuntimeError, match="not held"):

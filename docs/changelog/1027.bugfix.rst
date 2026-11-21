@@ -1,0 +1,2 @@
+A single-threaded process waiting for a SQLite read or write lock can run Python signal handlers while the lock is
+contended. A pending writer keeps its place ahead of new readers between retries.
