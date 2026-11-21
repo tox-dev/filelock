@@ -1416,7 +1416,12 @@ on until the handler returns.
 On Windows, :class:`~filelock.SoftFileLock` can report ``is_locked == False`` while ``release()`` is still trying to
 delete the marker. If a signal handler calls ``acquire()`` on another instance for that path, it can block waiting
 for the marker to disappear. Cleanup cannot resume until the handler returns, so the default blocking call can wait forever.
-Have the handler set a flag and return. Check the flag after the ``with`` block exits, then acquire the lock if needed.
+Have the handler set a flag and return.
+
+After the ``with`` block exits, Windows may still be denying deletion of the marker. Only the instance that released
+the lock can retry its pending cleanup. If the flag is set and you need the lock again, reuse that instance with a
+finite timeout, for example ``with lock.acquire(timeout=5):``. Handle :exc:`~filelock.Timeout` if the marker stays in
+place. A fresh instance can wait indefinitely for that marker with the default timeout.
 
 If a handler raises ``KeyboardInterrupt`` during release, the lock finishes releasing before the exception propagates.
 A handler that fires as ``release()`` begins can leave the hold for the next call.
