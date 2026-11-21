@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import pytest
 from capabilities import CAPABILITIES
 
-from filelock._util import exchange_supported
+from filelock.internal.filesystem import exchange_supported
 
 if TYPE_CHECKING:
     from typing import Final
@@ -126,6 +126,8 @@ XFAIL_WITHOUT_COROUTINE_CANCELLATION: Final[pytest.MarkDecorator] = pytest.mark.
     strict=False,
 )
 
+WINDOWS_ONLY: Final[pytest.MarkDecorator] = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+
 __all__ = [
     "NEEDS_AUDIT_EVENTS",
     "NEEDS_CLASS_COLLECTION",
@@ -145,5 +147,6 @@ __all__ = [
     "NEEDS_SYMLINK",
     "NEEDS_UNLINK_OPEN_FILE",
     "SKIP_ON_UNRELIABLE_PROCESS_SYNC",
+    "WINDOWS_ONLY",
     "XFAIL_WITHOUT_COROUTINE_CANCELLATION",
 ]

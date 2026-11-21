@@ -62,19 +62,30 @@ class _CapabilityPragmas(CoveragePlugin):
 
 #: Modules a missing capability makes unrunnable in full; marking every line would restate one module-level gate.
 _CAPABILITY_MODULES: Final[MappingProxyType[str, tuple[str, ...]]] = MappingProxyType({
-    "posix-hard-link": (
-        "*/tests/test_read_write_private_link.py",
-        "*\\tests\\test_read_write_private_link.py",
-    ),
+    "posix-hard-link": ("*/tests/sqlite/test_links*.py", "*/tests/sqlite/link_support.py"),
     "hard-link": (
-        "*/tests/test_strict_soft*.py",
-        "*/tests\\test_strict_soft*.py",
-        "*/tests/soft_rw/*.py",
-        "*\\tests\\soft_rw\\*.py",
-        "*/filelock/_strict.py",
-        "*\\filelock\\_strict.py",
-        "*/filelock/_soft_rw/*.py",
-        "*\\filelock\\_soft_rw\\*.py",
+        "*/tests/soft/read_write/*.py",
+        "*/tests/soft/strict/claim_records.py",
+        "*/tests/soft/strict/filesystem_faults.py",
+        "*/tests/soft/strict/test_claims.py",
+        "*/tests/soft/strict/test_compatibility.py",
+        "*/tests/soft/strict/test_directories*.py",
+        "*/tests/soft/strict/test_files.py",
+        "*/tests/soft/strict/test_lock*.py",
+        "*/tests/soft/strict/test_publication*.py",
+        "*/tests/soft/strict/test_recovery.py",
+        "*/tests/soft/strict/test_scan*.py",
+        "*/tests/soft/strict/test_sentinel.py",
+        "*/tests/soft/strict/test_windows*.py",
+        "*/filelock/internal/soft/read_write/*.py",
+        "*/filelock/internal/soft/strict/_claims.py",
+        "*/filelock/internal/soft/strict/_directories.py",
+        "*/filelock/internal/soft/strict/_files.py",
+        "*/filelock/internal/soft/strict/_lock.py",
+        "*/filelock/internal/soft/strict/_publication.py",
+        "*/filelock/internal/soft/strict/_release.py",
+        "*/filelock/internal/soft/strict/_scan.py",
+        "*/filelock/internal/soft/strict/_sentinel.py",
     ),
 })
 

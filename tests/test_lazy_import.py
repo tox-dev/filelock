@@ -4,6 +4,7 @@ import os
 import pickle  # ruff:ignore[suspicious-pickle-import]  # round-trips classes this package defines
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # a clean interpreter shows what the import itself loads
 import sys
+from importlib import import_module
 from textwrap import dedent
 from typing import TYPE_CHECKING
 
@@ -104,9 +105,9 @@ def _hidden_module_script(blocked: str, missing: str, attribute: str) -> str:
 @pytest.mark.parametrize(
     ("module", "attribute"),
     [
-        pytest.param("filelock._read_write", "ReadWriteLock", id="sync-read-write"),
-        pytest.param("filelock._async_read_write", "AsyncReadWriteLock", id="async-read-write"),
-        pytest.param("filelock._soft", "SoftFileLock", id="other-lazy-module"),
+        pytest.param("filelock.internal.sqlite._lock", "ReadWriteLock", id="sync-read-write"),
+        pytest.param("filelock.internal.sqlite._async", "AsyncReadWriteLock", id="async-read-write"),
+        pytest.param("filelock.internal.soft.exclusive._lock", "SoftFileLock", id="other-lazy-module"),
     ],
 )
 def test_lazy_import_missing_filelock_module_raises(module: str, attribute: str) -> None:
@@ -124,6 +125,13 @@ def test_lazy_import_class_pickles_by_reference() -> None:
 
 def test_lazy_import_dir_lists_every_public_name() -> None:
     assert _run("import filelock; print(sorted(set(filelock.__all__) - set(dir(filelock))))") == "[]\n"
+
+
+@pytest.mark.parametrize("package", ["async_lock", "soft", "soft.read_write", "sqlite"])
+def test_backend_exports_reject_unknown_names(package: str) -> None:
+    backend = import_module(f"filelock.internal.{package}")
+    with pytest.raises(AttributeError, match="missing"):
+        _ = backend.missing
 
 
 def test_lazy_import_unknown_name_raises() -> None:

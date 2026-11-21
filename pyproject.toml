@@ -304,16 +304,19 @@ type = [
 standalone.line-length = 120
 standalone.lazy-exclude-modules = [
   # installs the fork-safety audit hook and register_at_fork callbacks at import
-  "filelock._api",
+  "filelock.internal.core._fork",
+  "filelock.internal.core._shutdown",
   # installs its sqlite audit hook and fork handler at import, and must fail at import without sqlite3 so the package
   # __getattr__ resolves ReadWriteLock and AsyncReadWriteLock to None
-  "filelock._read_write",
+  "filelock.internal.sqlite._lock",
+  "filelock.internal.sqlite._fork",
   # a marker released from a finalizer at interpreter exit unlinks through it, and a first import then fails
-  "filelock._windows",
+  "filelock.internal.native._windows",
+  "filelock.internal.filesystem.windows",
+  "filelock.internal.filesystem.windows._oplocks",
+  "{__spec__.parent}._oplocks",
   # registers its atexit cleanup at import
-  "filelock._soft_rw._sync",
-  # a Python built without it must fail at import, as for filelock._read_write
-  "sqlite3",
+  "filelock.internal.soft.read_write._lock",
 ]
 
 [tool.python-sbom]
