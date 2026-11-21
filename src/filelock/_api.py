@@ -12,6 +12,7 @@ __lazy_modules__ = [
     "inspect",
     "math",
     "numbers",
+    "operator",
     "pathlib",
     "secrets",
     "types",
@@ -41,6 +42,7 @@ from decimal import Decimal
 from functools import cache, partial
 from itertools import count, starmap
 from numbers import Real
+from operator import attrgetter
 from pathlib import PurePath
 from threading import TIMEOUT_MAX, Condition, RLock, Thread, active_count, current_thread, get_ident, local, main_thread
 from typing import TYPE_CHECKING, Final, Generic, Literal, NoReturn, TypedDict, TypeVar, cast
@@ -1400,8 +1402,9 @@ class BaseFileLock(contextlib.ContextDecorator, metaclass=FileLockMeta):  # ruff
             self._context.lock_file_key = key
             # A shared instance may be released from another thread, which must clear the entry in the acquirer's
             # registry: the releaser's own thread-local registry never held it.
-            self._context.lock_file_registry = _REGISTRY.held
-            _REGISTRY.held[key] = self._holder_id
+            registry = _REGISTRY.held
+            self._context.lock_file_registry = registry
+            registry[key] = self._holder_id
 
     def _raise_if_voided(self) -> None:
         if (in_flight := self._context.in_flight) and in_flight[-1].voided:
@@ -2222,7 +2225,7 @@ class ThreadLocalFileContext(FileLockContext, local):
 
 def delegate_to_current(name: str) -> property:
     return property(
-        lambda context: getattr(context.current, name),
+        attrgetter(f"current.{name}"),
         lambda context, value: setattr(context.current, name, value),
     )
 
