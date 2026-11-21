@@ -1,0 +1,2 @@
+On POSIX, :class:`~filelock.ReadWriteLock` and :class:`~filelock.AsyncReadWriteLock` reject construction in a
+subinterpreter when the runtime can identify it. Use the main interpreter or a separate process.

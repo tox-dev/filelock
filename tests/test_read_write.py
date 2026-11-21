@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ctypes
 import itertools
 import os
 import re
@@ -11,9 +10,14 @@ import threading
 import time
 from contextlib import ExitStack, closing
 from errno import EWOULDBLOCK
+from importlib import import_module
 from multiprocessing import Event, Process, Value, set_start_method
 from pathlib import Path
+from textwrap import dedent
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
+
+if sys.platform == "win32":  # pragma: win32 cover
+    import ctypes
 
 import pytest
 from capabilities import CAPABILITIES
@@ -38,6 +42,52 @@ if sys.platform == "win32":  # pragma: win32 cover
     from filelock._identity import host_name
     from filelock._read_write import _host_digest, _remove_link_directory_on_windows
     from filelock._windows import _ADVAPI32, directory_is_private, make_private_directory, pinned
+
+
+@pytest.mark.skipif(not CAPABILITIES["posix-subinterpreters"], reason="needs POSIX subinterpreters")
+@pytest.mark.parametrize(
+    "without_legacy_module",
+    [
+        pytest.param(False, id="standard"),
+        pytest.param(
+            True,
+            id="embedded",
+            marks=pytest.mark.skipif(not CAPABILITIES["embedded-interpreter-api"], reason="needs the 3.11 C API"),
+        ),
+    ],
+)
+def test_read_write_locks_require_the_main_interpreter(
+    tmp_path: Path, *, without_legacy_module: bool
+) -> None:  # pragma: needs posix-subinterpreters
+    interpreters = import_module("_interpreters" if sys.version_info >= (3, 13) else "_xxsubinterpreters")
+    child = interpreters.create()
+    try:
+        child_db = tmp_path / "child.db"
+        result = interpreters.run_string(
+            child,
+            dedent(f"""
+            import sys
+
+            if {without_legacy_module!r}:
+                sys.modules["_xxsubinterpreters"] = None
+            from filelock import AsyncReadWriteLock, ReadWriteLock
+
+            for lock_type in (ReadWriteLock, AsyncReadWriteLock):
+                try:
+                    lock_type({str(child_db)!r})
+                except RuntimeError as error:
+                    assert "main interpreter" in str(error), error
+                else:
+                    raise AssertionError(f"{{lock_type.__name__}} opened a database")
+            """),
+        )
+        assert result is None
+        assert not child_db.exists()
+        main_db = tmp_path / "main.db"
+        with ReadWriteLock(main_db).write_lock():
+            assert main_db.is_file()
+    finally:
+        interpreters.destroy(child)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")  # pragma: win32 cover

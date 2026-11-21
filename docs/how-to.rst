@@ -590,6 +590,14 @@ after an unlink or a replace the next opener creates a fresh file and acquires a
 lock on the orphan. On POSIX an acquisition that sees the path replaced while it waited raises :class:`OSError` instead
 of taking a lock no later opener can see.
 
+On POSIX, create :class:`~filelock.ReadWriteLock` and :class:`~filelock.AsyncReadWriteLock` in the main interpreter.
+Closing a database file descriptor in a subinterpreter can release another interpreter's SQLite lock. Construction in
+a subinterpreter raises :class:`RuntimeError` when filelock can identify it. CPython 3.12 and later expose this
+directly. Embedded CPython 3.11 needs ``_xxsubinterpreters`` or ``ctypes`` with access to the interpreter C API.
+
+Run the lock operation in the main interpreter or a separate process. :class:`~filelock.SoftReadWriteLock` is an
+alternative when every participant uses it and the interpreter permits its daemon heartbeat thread.
+
 SQLite prohibits using or closing a database connection inherited across ``fork()``. filelock invalidates an
 inherited ``ReadWriteLock`` or ``AsyncReadWriteLock`` in the child. Acquisition raises ``RuntimeError``; ``release()``
 and ``close()`` do nothing so context-manager cleanup cannot release the parent's transaction. On CPython, if no

@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from functools import partial
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
@@ -28,6 +29,7 @@ from filelock._read_write import (
     ReadWriteLock,
     _ForkedDatabaseRegistry,
     _ForkSafeConnection,
+    _in_subinterpreter,
     _track_sqlite_use,
     timeout_for_sqlite,
 )
@@ -39,6 +41,49 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
     from filelock import AcquireReturnProxy
+
+
+def test_subinterpreter_refusal_precedes_database_access(tmp_path: Path, mocker: MockerFixture) -> None:
+    path = tmp_path / "lock.db"
+    mocker.patch("filelock._read_write._IN_POSIX_SUBINTERPRETER", new=True)
+    with pytest.raises(RuntimeError, match="main interpreter"):
+        ReadWriteLock(path)
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("main", [True, False])
+def test_thread_interpreter_identity(mocker: MockerFixture, *, main: bool) -> None:
+    mocker.patch("filelock._read_write._thread", new=SimpleNamespace(_is_main_interpreter=lambda: main))
+    assert _in_subinterpreter() is not main
+
+
+@pytest.mark.parametrize("current", [0, 1])
+def test_legacy_interpreter_identity(mocker: MockerFixture, current: int) -> None:
+    mocker.patch("filelock._read_write._thread", new=SimpleNamespace())
+    mocker.patch(
+        "filelock._read_write.import_module",
+        autospec=True,
+        return_value=SimpleNamespace(get_current=lambda: current, get_main=lambda: 0),
+    )
+    assert _in_subinterpreter() is (current != 0)
+
+
+@pytest.mark.parametrize("implementation", ["cpython", "pypy"])
+def test_runtime_without_interpreter_ids(mocker: MockerFixture, implementation: str) -> None:
+    mocker.patch("filelock._read_write._thread", new=SimpleNamespace())
+    mocker.patch("filelock._read_write.sys", new=SimpleNamespace(implementation=SimpleNamespace(name=implementation)))
+    mocker.patch("filelock._read_write.import_module", autospec=True, side_effect=ModuleNotFoundError)
+    assert not _in_subinterpreter()
+
+
+def test_embedded_cpython_without_the_interpreters_module(mocker: MockerFixture) -> None:
+    mocker.patch("filelock._read_write._thread", new=SimpleNamespace())
+    mocker.patch("filelock._read_write.sys", new=SimpleNamespace(implementation=SimpleNamespace(name="cpython")))
+    api = object()
+    states = {("PyInterpreterState_Get", api): lambda: 7, ("PyInterpreterState_Main", api): lambda: 4}
+    library = SimpleNamespace(PYFUNCTYPE=lambda _result: states.__getitem__, c_void_p=int, pythonapi=api)
+    mocker.patch("filelock._read_write.import_module", autospec=True, side_effect=[ModuleNotFoundError, library])
+    assert _in_subinterpreter()
 
 
 @pytest.fixture(autouse=True)
