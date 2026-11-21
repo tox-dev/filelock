@@ -1,2 +1,2 @@
-On Windows, :class:`~filelock.ReadWriteLock` rejects junctions in the private database alias path and prevents the alias
-directories from being renamed until SQLite opens the database.
+On Windows, :class:`~filelock.ReadWriteLock` rejects junctions in its private database alias path and prevents
+directory renames until SQLite opens the database.

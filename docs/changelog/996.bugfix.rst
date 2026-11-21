@@ -1,3 +1,2 @@
-A raising signal handler can interrupt marker creation before ``SoftFileLock`` stores the new descriptor. The interrupted
-acquire now removes its empty marker, so later contenders can acquire. The same cleanup applies while replacing a stale
-marker and to ``MarkerSoftFileLock`` and ``SoftFileLease``.
+``SoftFileLock``, ``MarkerSoftFileLock`` and ``SoftFileLease`` remove empty markers after a signal interrupts marker
+creation or stale-marker replacement.

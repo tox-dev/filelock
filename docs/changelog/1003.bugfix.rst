@@ -1,7 +1,4 @@
-On POSIX, :class:`~filelock.ReadWriteLock` and :class:`~filelock.AsyncReadWriteLock` raise :class:`RuntimeError`
-when filelock identifies a subinterpreter, even when it is the only interpreter using the database. This affects
-``InterpreterPoolExecutor`` workers and mod_wsgi or uWSGI applications configured to run in a subinterpreter. Move
-lock operations into the main interpreter or a separate process.
-
-CPython 3.12 and later expose interpreter identity directly. Embedded CPython 3.11 needs ``_xxsubinterpreters`` or
-``ctypes`` with access to the interpreter C API for filelock to enforce the check.
+On POSIX, :class:`~filelock.ReadWriteLock` and :class:`~filelock.AsyncReadWriteLock` raise :class:`RuntimeError` in
+detected subinterpreters, including ``InterpreterPoolExecutor`` workers and mod_wsgi or uWSGI subinterpreters. Use the
+main interpreter or a separate process. Detection on embedded CPython 3.11 requires ``_xxsubinterpreters`` or
+``ctypes`` access to the interpreter C API.

@@ -1,3 +1,2 @@
-Keep :class:`~filelock.ReadWriteLock` from replaying a ``-journal`` left beside its database before the directory was
-made private. Such a journal could make SQLite delete a file named in it. An existing ``-journal``, ``-wal`` or ``-shm``
-now selects the private hard-link route on POSIX and Windows.
+On POSIX and Windows, :class:`~filelock.ReadWriteLock` opens its database through a private hard link if a
+``-journal``, ``-wal`` or ``-shm`` file already exists, preventing replay of a leftover journal.

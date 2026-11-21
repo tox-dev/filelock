@@ -1,2 +1,2 @@
-A Unix acquire interrupted on a filesystem without ``flock`` can leave a recovery marker that a waiter reclaims
-after two seconds. This requires atomic exchange and enough space to write the marker.
+On Unix filesystems without ``flock``, waiters can reclaim an interrupted acquire's recovery marker after two seconds
+if atomic exchange and space for the marker are available.

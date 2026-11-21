@@ -1,3 +1,2 @@
-``SoftReadWriteLock`` and ``AsyncSoftReadWriteLock`` bound each generation log scan, so an account that keeps adding
-records cannot hold an acquisition inside one scan past its timeout. Release raises a protocol error when it cannot
-withdraw the holder before its stale threshold.
+``SoftReadWriteLock`` and ``AsyncSoftReadWriteLock`` limit generation scans during acquire. Release raises a protocol
+error if it cannot withdraw the holder before its stale threshold.

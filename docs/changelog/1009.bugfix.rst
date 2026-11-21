@@ -1,2 +1,1 @@
-On Windows, :class:`~filelock.SoftFileLock` now treats an existing symlink as an occupied marker. Creating the marker
-leaves the link target untouched.
+On Windows, :class:`~filelock.SoftFileLock` treats a symlink as an occupied marker and leaves its target untouched.

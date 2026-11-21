@@ -1,2 +1,2 @@
-A :class:`~filelock.SoftReadWriteLock` contender that pauses past its ``stale_threshold`` while waiting now starts
-under a new token. A delayed sweep of its old record can no longer remove the record of a newly granted holder.
+A :class:`~filelock.SoftReadWriteLock` waiter paused past ``stale_threshold`` gets a fresh token so cleanup of its old
+record cannot remove the new hold.

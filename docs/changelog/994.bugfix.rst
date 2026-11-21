@@ -1,2 +1,1 @@
-On filesystems without ``flock``, a Unix lock creates its soft marker with group and other writes disabled, even when
-the filesystem also refuses atomic exchange.
+Unix soft fallback markers exclude group and other writes even on filesystems without atomic exchange.
