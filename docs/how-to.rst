@@ -587,6 +587,10 @@ on :class:`SoftReadWriteLock <filelock.SoftReadWriteLock>` too.
 
 A synchronous SQLite wait returns to Python between busy retries so a single-threaded process can handle signals.
 Once its writer is pending, later readers wait for it. If a handler raises, the interrupted writer gives up its place.
+If the handler waits for the same database through a second lock instance, the pending writer cannot proceed until the
+handler returns. Defer that acquisition until after the handler returns, or use ``blocking=False`` and handle
+:class:`~filelock.Timeout`.
+
 On systems with fork support, a multithreaded process releases the connection between attempts to let other threads
 fork. A reader can enter between those attempts.
 
