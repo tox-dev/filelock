@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-__lazy_modules__ = ["typing"]
+from typing import TYPE_CHECKING, Final
 
-from typing import Final
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class Timeout(TimeoutError):  # ruff:ignore[error-suffix-on-exception-name]  # public exception name; renaming breaks the API
@@ -41,6 +42,31 @@ class Timeout(TimeoutError):  # ruff:ignore[error-suffix-on-exception-name]  # p
     def lock_file(self) -> str:
         """The path of the file lock."""
         return self._lock_file
+
+
+class ReleasePendingError(TimeoutError):
+    """
+    The Windows strict-lock release is still running after the caller's deadline.
+
+    :param message: identifies the lock whose release is pending
+    :param wait: waits for this release and propagates the worker's error
+    """
+
+    def __init__(self, message: str, wait: Callable[[float | None], None]) -> None:  # pragma: win32 cover
+        super().__init__(message)
+        self._wait = wait
+
+    def __reduce__(self) -> tuple[type[ReleasePendingError], tuple[str, Callable[[float | None], None]]]:
+        return type(self), (str(self), self._wait)
+
+    def wait(self, timeout: float | None = None) -> None:  # pragma: win32 cover
+        """
+        Wait for this release, including after another thread acquires the lock again.
+
+        :param timeout: seconds to wait, or ``None`` to wait until completion
+        :raises ReleasePendingError: the release is still running when the timeout expires
+        """
+        self._wait(timeout)
 
 
 class SoftFileLockLifetimeWarning(FutureWarning):
@@ -103,6 +129,7 @@ class SoftFileLockProtocolError(OSError):
 
 __all__ = [
     "LeaseSettingsMismatch",
+    "ReleasePendingError",
     "SoftFileLockLifetimeWarning",
     "SoftFileLockProtocolError",
     "Timeout",

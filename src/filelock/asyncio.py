@@ -967,6 +967,8 @@ class AsyncSoftFileLock(SoftFileLock, BaseAsyncFileLock):
 class AsyncStrictSoftFileLock(StrictSoftFileLock, BaseAsyncFileLock):
     """Run strict owner-claim locking without blocking the event loop."""
 
+    _timed_release_supported = False
+
 
 class AsyncSoftFileLease(SoftFileLease, BaseAsyncFileLock):
     """Existence lock whose claim expires, so a peer may take it while the previous holder still runs."""
