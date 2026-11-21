@@ -2398,26 +2398,27 @@ def test_lock_file_of_another_account_under_sticky_parent_is_refused(  # pragma:
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl
-def test_hard_linked_lock_file_is_refused_until_the_extra_name_is_removed(tmp_path: Path) -> None:
+def test_callback_lock_retries_after_the_link_count_returns_to_one(tmp_path: Path, mocker: MockerFixture) -> None:
     lock_path = tmp_path / "test.lock"
     lock_path.write_bytes(b"holder metadata")
-    alias = tmp_path / "alias"
-    alias.hardlink_to(lock_path)
     calls: list[int] = []
     lock = FileLock(lock_path, timeout=0, on_acquired=calls.append)
+    # Some runtimes can inspect a file's link count but cannot create a second name for it.
+    links = mocker.patch("os.fstat", autospec=True, return_value=SimpleNamespace(st_nlink=2))
 
     with pytest.raises(PermissionError, match="another hard link") as raised:
         lock.acquire()
     assert (raised.value.filename, lock.is_locked, calls) == (str(lock_path.resolve()), False, [])
-    assert alias.read_bytes() == b"holder metadata"
+    assert lock_path.read_bytes() == b"holder metadata"
 
-    alias.unlink()
+    mocker.stop(links)
     with lock:
         (fd,) = calls
         assert os.path.samestat(os.fstat(fd), lock_path.stat())
 
 
 @NEEDS_FCNTL  # pragma: needs fcntl
+@pytest.mark.requires_hard_links  # pragma: needs hard-link
 def test_hard_linked_names_share_a_native_lock_without_a_callback(tmp_path: Path) -> None:
     path = tmp_path / "test.lock"
     path.write_bytes(b"holder metadata")
