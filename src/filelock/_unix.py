@@ -324,9 +324,22 @@ else:  # pragma: win32 no cover
             # it and let the retry loop start over.
             if (stat_result := os.fstat(fd)).st_nlink == 0:
                 return
+            parent = Path(self._lock_path).parent.stat()
+            # A callback may truncate the descriptor. Where the kernel lets an account link a file it does not own
+            # (macOS, FreeBSD, Linux without fs.protected_hardlinks), another account that can write the directory can
+            # link one of the caller's files to the lock path, so a second name could belong to an unrelated file.
+            #
+            # A directory no other account can write holds only names the caller added. Refusing there would let any
+            # account that can link the lock file elsewhere block the lock.
+            if (
+                stat_result.st_nlink > 1
+                and self._settings.on_acquired is not None
+                and (parent.st_uid not in {os.geteuid(), 0} or parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
+            ):
+                reason = "lock file has another hard link where other accounts can write; on_acquired cannot take it"
+                raise PermissionError(EACCES, reason, self._lock_path)
             # The owner of a file under a sticky parent may unlink it during the hold. A contender then locks a new
             # inode at the path, and both hold the lock.
-            parent = Path(self._lock_path).parent.stat()
             if (owner := foreign_owner(stat_result, parent, fd=fd)) is not None:  # pragma: needs foreign-sticky-tmp
                 reason = f"lock file belongs to uid {owner}, not to this process's account or the directory's owner"
                 raise PermissionError(EACCES, reason, self._lock_path)
