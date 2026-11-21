@@ -65,6 +65,7 @@ class OsFiles:
     # Record files under a lock's protocol root, opened without following symlinks and owned by this UID alone.
     def __init__(self, lock_file: str) -> None:
         self._lock_file = lock_file
+        self._lock_parent = Path(lock_file).parent
         self._prepared = False
 
     def read(self, path: str) -> bytes | None:
@@ -123,7 +124,10 @@ class OsFiles:
         # place. Each call therefore opens the root and then the record's directory without following symlinks and
         # works inside what it opened. No descriptor outlives the call, so a later call finds a log removed and started
         # again by name, as before. None means descriptors cannot anchor a call and the call uses the whole path.
-        if depth and _SUPPORTS_DIR_FD:  # pragma: needs link-dir-fd
+        if not depth:
+            yield None
+            return
+        if _SUPPORTS_DIR_FD:  # pragma: needs link-dir-fd
             with self._relative(path, depth - 1) as (name, parent_fd):
                 try:
                     fd = os.open(name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _O_NOFOLLOW, dir_fd=parent_fd)
@@ -152,7 +156,7 @@ class OsFiles:
                 msg = f"{error.filename} is not a directory or is a symlink; refusing to use it"
                 raise TreeReplacedError(msg) from error
             with pins:
-                lock_directory = Path(self._lock_file).parent.stat()
+                lock_directory = self._lock_parent.stat()
                 for directory in directories:  # pragma: needs foreign-sticky-tmp
                     _raise_if_untrusted_directory(
                         str(directory), directory.lstat(), directory.parent.stat(), lock_directory
@@ -163,7 +167,7 @@ class OsFiles:
         # A removed tree's inode may be reused, so every open needs an ownership check.
         found = os.fstat(fd)
         parent = os.fstat(parent_fd) if parent_fd is not None else Path(path).parent.stat()
-        _raise_if_untrusted_directory(path, found, parent, Path(self._lock_file).parent.stat(), fd=fd)
+        _raise_if_untrusted_directory(path, found, parent, self._lock_parent.stat(), fd=fd)
 
     def create(self, path: str, data: bytes, *, durable: bool = False) -> tuple[int, int]:
         with self._relative(path) as (name, dir_fd):
@@ -217,14 +221,22 @@ class OsFiles:
             raise failure
         return False
 
-    def replace(self, source: str, target: str) -> bool:
-        try:
-            with self._relative(source) as (source_name, source_fd), self._relative(target) as (target_name, target_fd):
-                os.replace(source_name, target_name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
-        except PermissionError:
-            # Windows refuses to rename over a file a reader holds open; callers tolerate a target one rename behind.
-            return False
-        return True
+    def write_head(self, path: str, temporary: str, data: bytes) -> None:
+        with self._relative(path) as (name, directory):
+            stage = temporary if directory is not None else str(Path(path).with_name(temporary))
+            renamed = False
+            fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_BINARY, 0o600, dir_fd=directory)
+            try:
+                try:
+                    write_all(fd, data)
+                finally:
+                    os.close(fd)
+                os.replace(stage, name, src_dir_fd=directory, dst_dir_fd=directory)
+                renamed = True
+            finally:
+                if not renamed:
+                    with suppress(FileNotFoundError, PermissionError):
+                        os.unlink(stage, dir_fd=directory)
 
     def overwrite(self, path: str, data: bytes, identity: tuple[int, int], header: bytes) -> bool:
         # O_NONBLOCK keeps an open of a FIFO (a named pipe) at the path from blocking, as in read. The open is for
