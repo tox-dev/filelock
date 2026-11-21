@@ -2397,6 +2397,26 @@ def test_lock_file_of_another_account_under_sticky_parent_is_refused(  # pragma:
     assert (raised.value.filename, lock.is_locked, lock_path_in_shared_tmp.exists()) == expected
 
 
+@NEEDS_FCNTL  # pragma: needs fcntl
+def test_hard_link_to_another_file_is_refused(tmp_path: Path) -> None:
+    # Another account can link a file of ours to the lock path where the kernel allows it; the hook must not get it.
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"keep me")
+    lock_path = tmp_path / "test.lock"
+    os.link(victim, lock_path)
+    calls: list[int] = []
+
+    def truncate(fd: int) -> None:
+        calls.append(fd)
+        os.ftruncate(fd, 0)
+
+    lock = FileLock(lock_path, timeout=0, is_singleton=False, on_acquired=truncate)
+    with pytest.raises(PermissionError, match="another hard link") as raised:
+        lock.acquire()
+    assert (raised.value.filename, lock.is_locked, calls) == (str(lock_path.resolve()), False, [])
+    assert victim.read_bytes() == b"keep me"
+
+
 @pytest.mark.skipif(sys.platform not in {"linux", "android"}, reason="ownership proof uses Linux procfs")
 @pytest.mark.parametrize(
     "lock_type",
