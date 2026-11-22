@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import os
-import pickle  # ruff:ignore[suspicious-pickle-import]  # round-trips classes this package defines
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  # a clean interpreter shows what the import itself loads
 import sys
+from importlib import import_module
 from textwrap import dedent
 from typing import TYPE_CHECKING
 
@@ -104,26 +104,24 @@ def _hidden_module_script(blocked: str, missing: str, attribute: str) -> str:
 @pytest.mark.parametrize(
     ("module", "attribute"),
     [
-        pytest.param("filelock._read_write", "ReadWriteLock", id="sync-read-write"),
-        pytest.param("filelock._async_read_write", "AsyncReadWriteLock", id="async-read-write"),
-        pytest.param("filelock._soft", "SoftFileLock", id="other-lazy-module"),
+        pytest.param("filelock._sqlite._lock", "ReadWriteLock", id="sync-read-write"),
+        pytest.param("filelock._sqlite._async", "AsyncReadWriteLock", id="async-read-write"),
+        pytest.param("filelock._soft._exclusive._lock", "SoftFileLock", id="other-lazy-module"),
     ],
 )
 def test_lazy_import_missing_filelock_module_raises(module: str, attribute: str) -> None:
     assert _run(_hidden_module_script(module, module, attribute)) == f"error:{module}\n"
 
 
-def test_lazy_import_async_file_lock_subclasses_file_lock() -> None:
-    assert {filelock.FileLock, filelock.BaseAsyncFileLock} <= set(filelock.AsyncFileLock.__mro__)
-
-
-def test_lazy_import_class_pickles_by_reference() -> None:
-    payload = pickle.dumps(filelock.AsyncFileLock)
-    assert pickle.loads(payload) is filelock.AsyncFileLock  # ruff:ignore[suspicious-pickle-usage]  # payload made here
-
-
 def test_lazy_import_dir_lists_every_public_name() -> None:
     assert _run("import filelock; print(sorted(set(filelock.__all__) - set(dir(filelock))))") == "[]\n"
+
+
+@pytest.mark.parametrize("package", ["_async_lock", "_soft", "_soft._read_write", "_sqlite"])
+def test_backend_exports_reject_unknown_names(package: str) -> None:
+    backend = import_module(f"filelock.{package}")
+    with pytest.raises(AttributeError, match="missing"):
+        _ = backend.missing
 
 
 def test_lazy_import_unknown_name_raises() -> None:

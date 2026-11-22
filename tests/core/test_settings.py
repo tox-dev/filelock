@@ -1,0 +1,218 @@
+from __future__ import annotations
+
+import os
+import sys
+from stat import filemode
+from typing import TYPE_CHECKING
+
+import pytest
+
+from filelock import AsyncFileLock, FileLock, SoftFileLock, StrictSoftFileLock
+from filelock._core import UNSET_FILE_MODE, BaseFileLock
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from pytest_mock import MockerFixture, MockType
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        pytest.param(UNSET_FILE_MODE, 0o644, id="default"),
+        pytest.param(0o600, 0o600, id="explicit"),
+    ],
+)
+def test_mode_property(lock_type: type[BaseFileLock], mode: int, expected: int, tmp_path: Path) -> None:
+    assert lock_type(tmp_path / "a.lock", mode=mode).mode == expected
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        pytest.param(UNSET_FILE_MODE, False, id="default"),
+        pytest.param(0o644, True, id="explicit"),
+    ],
+)
+def test_has_explicit_mode(lock_type: type[BaseFileLock], mode: int, expected: bool, tmp_path: Path) -> None:
+    assert lock_type(tmp_path / "a.lock", mode=mode).has_explicit_mode is expected
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        pytest.param(UNSET_FILE_MODE, 0o666, id="default"),
+        pytest.param(0o600, 0o600, id="explicit"),
+    ],
+)
+def test_open_mode(lock_type: type[BaseFileLock], mode: int, expected: int, tmp_path: Path) -> None:
+    assert lock_type(tmp_path / "a.lock", mode=mode)._open_mode() == expected
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not apply umask to file permissions")
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock])
+def test_default_mode_respects_umask(lock_type: type[BaseFileLock], tmp_path: Path) -> None:  # pragma: win32 no cover
+    lock_path = tmp_path / "a.lock"
+    lock = lock_type(str(lock_path))
+
+    initial_umask = os.umask(0o022)
+    try:  # pragma: win32 no cover
+        lock.acquire()
+        assert lock.is_locked
+        assert filemode(lock_path.stat().st_mode) == "-rw-r--r--"
+    finally:
+        os.umask(initial_umask)
+
+    lock.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fchmod only on Unix")
+def test_default_mode_skips_fchmod(tmp_path: Path, mocker: MockType) -> None:  # pragma: win32 no cover
+    lock = FileLock(str(tmp_path / "a.lock"))
+
+    fchmod_spy = mocker.patch("os.fchmod", autospec=True)
+    lock.acquire()
+    assert lock.is_locked
+    fchmod_spy.assert_not_called()
+    lock.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fchmod only on Unix")
+def test_explicit_mode_calls_fchmod(tmp_path: Path, mocker: MockType) -> None:  # pragma: win32 no cover
+    lock = FileLock(str(tmp_path / "a.lock"), mode=0o644)
+
+    fchmod_spy = mocker.spy(os, "fchmod")
+    lock.acquire()
+    assert lock.is_locked
+    fchmod_spy.assert_called_once()
+    assert fchmod_spy.call_args[0][1] == 0o644
+    lock.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fchmod only on Unix")
+def test_explicit_mode_overrides_umask(tmp_path: Path) -> None:  # pragma: win32 no cover
+    lock_path = tmp_path / "a.lock"
+    lock = FileLock(str(lock_path), mode=0o666)
+
+    initial_umask = os.umask(0o022)
+    try:  # pragma: win32 no cover
+        lock.acquire()
+        assert lock.is_locked
+        assert filemode(lock_path.stat().st_mode) == "-rw-rw-rw-"
+    finally:
+        os.umask(initial_umask)
+
+    lock.release()
+
+
+@pytest.mark.requires_hard_links
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not apply POSIX modes to directories")
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        pytest.param(UNSET_FILE_MODE, "drwxrwxrwt", id="default"),
+        pytest.param(0o600, "drwx-----T", id="owner"),
+        pytest.param(0o640, "drwxr-x--T", id="group-read"),
+        pytest.param(0o660, "drwxrwx--T", id="group-write"),
+    ],
+)
+def test_strict_protocol_directories_follow_mode(  # pragma: win32 no cover  # pragma: needs hard-link
+    mode: int, expected: str, tmp_path: Path
+) -> None:
+    initial_umask = os.umask(0)
+    try:  # pragma: win32 no cover
+        with StrictSoftFileLock(tmp_path / "a.lock", mode=mode):
+            pass
+    finally:
+        os.umask(initial_umask)
+
+    coordination = tmp_path / "a.lock.filelock"
+    assert [filemode(directory.stat().st_mode) for directory in (coordination, coordination / "claims")] == [
+        expected,
+        expected,
+    ]
+
+
+@pytest.mark.requires_hard_links
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not apply POSIX modes to directories")
+@pytest.mark.parametrize(
+    ("owned", "expected"),
+    [pytest.param(True, "drwx-----T", id="owned"), pytest.param(False, "drwxrwxrwx", id="another-account")],
+)
+def test_strict_wide_directories_are_narrowed_only_when_owned(  # pragma: win32 no cover  # pragma: needs hard-link
+    tmp_path: Path, mocker: MockerFixture, *, owned: bool, expected: str
+) -> None:
+    # An earlier release, or a wider umask, may have left the directories open; ones of another account are not ours.
+    coordination = tmp_path / "a.lock.filelock"
+    (coordination / "claims").mkdir(parents=True)
+    for directory in (coordination, coordination / "claims"):
+        directory.chmod(0o777)
+    assert sys.platform != "win32"  # narrows os.geteuid for the type checker
+    mocker.patch("filelock._soft._strict._lock.os.geteuid", autospec=True, return_value=os.geteuid() + int(not owned))
+
+    with StrictSoftFileLock(tmp_path / "a.lock", mode=0o600):
+        pass
+
+    assert [filemode(directory.stat().st_mode) for directory in (coordination, coordination / "claims")] == [
+        expected,
+        expected,
+    ]
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param(UNSET_FILE_MODE, id="default"),
+        pytest.param(0o600, id="explicit"),
+    ],
+)
+def test_singleton_same_mode_matches(mode: int, tmp_path: Path) -> None:
+    lock_path = str(tmp_path / "a.lock")
+    assert FileLock(lock_path, mode=mode, is_singleton=True) is FileLock(lock_path, mode=mode, is_singleton=True)
+
+
+def test_singleton_default_vs_explicit_mode_differ(tmp_path: Path) -> None:
+    lock_path = str(tmp_path / "a.lock")
+    lock = FileLock(lock_path, is_singleton=True)
+    with pytest.raises(ValueError, match="mode"):
+        FileLock(lock_path, mode=0o644, is_singleton=True)
+    del lock
+
+
+def test_unset_file_mode_sentinel_value() -> None:
+    assert UNSET_FILE_MODE == -1
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, StrictSoftFileLock, AsyncFileLock])
+@pytest.mark.parametrize(
+    "mode",
+    [pytest.param(0o444, id="no-write"), pytest.param(0o200, id="no-read"), pytest.param(0, id="none")],
+)
+def test_mode_without_owner_read_write_raises(lock_type: type[BaseFileLock], mode: int, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="must grant the owner read and write"):
+        lock_type(tmp_path / "a.lock", mode=mode)
+
+
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, AsyncFileLock])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param(-2, id="negative"),
+        pytest.param(0o4600, id="setuid"),
+        pytest.param(0o2600, id="setgid"),
+        pytest.param(0o1600, id="sticky"),
+        pytest.param(0o7777, id="all-special-bits"),
+    ],
+)
+def test_mode_outside_permission_bits_raises(lock_type: type[BaseFileLock], mode: int, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"must be within 0o000-0o777"):
+        lock_type(tmp_path / "a.lock", mode=mode)
+
+
+@pytest.mark.parametrize("mode", [pytest.param("0o644", id="str"), pytest.param(True, id="bool")])
+def test_mode_of_wrong_type_raises(mode: str | bool, tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="mode must be an int"):
+        FileLock(tmp_path / "a.lock", mode=mode)  # ty: ignore[invalid-argument-type]  # the rejected type is the contract

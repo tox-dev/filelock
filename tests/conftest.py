@@ -14,9 +14,8 @@ from typing import TYPE_CHECKING, Final, Protocol, TypeVar
 import pytest
 from capabilities import CAPABILITIES
 
-import filelock._identity  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import BaseFileLock, MarkerSoftFileLock, SoftFileLease, SoftFileLock, Timeout
-from filelock._identity import host_name
+from filelock._identity import host_name, process_alive
 from tests.descriptor_helpers import descriptors_on
 from tests.fork_helpers import exit_child
 
@@ -70,8 +69,7 @@ def acquire_after_reclaim(lock: BaseFileLock) -> None:
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    # Tests marked requires_hard_links cannot run where os.link is missing (Termux/Android CPython ships without it).
-    # The no-hard-link degradation itself is covered by the os.link tests in test_filelock.py, which run everywhere.
+    # Termux builds can omit os.link. Fallback tests still run there.
     if not hasattr(os, "link"):  # pragma: no cover  # the body runs only on Termux/Android, absent from the CI matrix
         skip = pytest.mark.skip(reason="test requires os.link (hard links), absent on Termux/Android")
         for item in items:
@@ -135,11 +133,10 @@ def close_failure(
     def capture(fd: int) -> None:
         nonlocal locked_fd
         locked_fd = fd
-        mocker.patch("filelock._api.os.close", side_effect=close, autospec=True)
+        mocker.patch("os.close", side_effect=close, autospec=True)
 
     def close(fd: int) -> None:
-        # filelock._api.os is the os module, so this patches os.close process-wide. Raise only for the descriptor
-        # under test. An unrelated close inside a GC finalizer would escape as an unraisable exception.
+        # GC finalizers can close unrelated descriptors while the patch is active.
         if fd == locked_fd:
             raise release_error
         real_close(fd)  # pragma: no cover  # only an unrelated close (e.g. a GC finalizer) reaches here
@@ -153,21 +150,20 @@ def close_failure(
 def break_route(request: pytest.FixtureRequest, mocker: MockerFixture) -> None:
     # Run the test with the platform's own stale break, then as where no atomic exchange of two names exists.
     if request.param == "no-exchange":
-        mocker.patch("filelock._util._rename_call", return_value=None, autospec=True)
+        mocker.patch("filelock._filesystem._exchange._rename_call", return_value=None, autospec=True)
 
 
 @pytest.fixture
 def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None]], None]:
     # Schedule an action for right after the stale break re-reads the lock file and before it takes the marker.
     def schedule(lock: Path, action: Callable[[], None]) -> None:
-        alive = filelock._identity.process_alive
         lstat = os.lstat
         state: list[str] = []
 
         def judged(pid: int) -> bool:
             # The owner check comes right before the break, whose first look at the path is the recheck.
             state.append("judged")
-            return alive(pid)
+            return process_alive(pid)
 
         def lstat_then_act(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
             found: Final[os.stat_result] = lstat(path, dir_fd=dir_fd)
@@ -176,7 +172,7 @@ def on_break_recheck(mocker: MockerFixture) -> Callable[[Path, Callable[[], None
                 action()
             return found
 
-        mocker.patch("filelock._identity.process_alive", side_effect=judged, autospec=True)
+        mocker.patch("filelock._identity._process.process_alive", side_effect=judged, autospec=True)
         mocker.patch.object(os, "lstat", new=lstat_then_act)
 
     return schedule
@@ -251,7 +247,7 @@ def lock_path_in_shared_tmp() -> Iterator[Path]:  # pragma: needs foreign-sticky
 def directories_of_another_account(mocker: MockerFixture) -> None:  # pragma: needs foreign-sticky-tmp
     # Directories this process creates then look, to the lock, like ones another account created first.
     assert sys.platform != "win32"  # the capability is absent there; narrows os.geteuid for the type checker
-    mocker.patch("filelock._util.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
+    mocker.patch("filelock._filesystem._files.os.geteuid", autospec=True, return_value=os.geteuid() + 1)
 
 
 @pytest.fixture  # pragma: darwin no cover
@@ -262,7 +258,7 @@ def uid_shared_with_unmapped_accounts(mocker: MockerFixture) -> None:  # pragma:
         assert path == Path("/proc/sys/kernel/overflowuid")
         return str(os.geteuid())
 
-    mocker.patch("filelock._util._linux_owner_probe", autospec=True, return_value=lambda _fd: False)
+    mocker.patch("filelock._filesystem._ownership._linux_owner_probe", autospec=True, return_value=lambda _fd: False)
     mocker.patch.object(Path, "read_text", autospec=True, side_effect=read_proc)
     mocker.patch.object(Path, "read_bytes", autospec=True, return_value=b"0 100000 65536")
 
@@ -271,7 +267,7 @@ def uid_shared_with_unmapped_accounts(mocker: MockerFixture) -> None:  # pragma:
 def sticky_dir_with_mapped_owner(tmp_path: Path, mocker: MockerFixture) -> Path:
     assert sys.platform != "win32"
     tmp_path.chmod(0o1700)
-    mocker.patch("filelock._util._linux_owner_probe", autospec=True, return_value=None)
+    mocker.patch("filelock._filesystem._ownership._linux_owner_probe", autospec=True, return_value=None)
     sysctl = tmp_path / "overflowuid"
     sysctl.write_text(str(os.geteuid()), encoding="ascii")
     proc = tmp_path / "proc"
@@ -288,7 +284,11 @@ def sticky_dir_with_mapped_owner(tmp_path: Path, mocker: MockerFixture) -> Path:
 
     mocker.patch.object(Path, "read_bytes", autospec=True, side_effect=read_fd_info)
     paths = {"/proc/thread-self": proc, "/proc/sys/kernel/overflowuid": sysctl}
-    mocker.patch("filelock._util.Path", autospec=True, side_effect=lambda name: paths.get(name, Path(name)))
+    mocker.patch(
+        "filelock._filesystem._ownership.Path",
+        autospec=True,
+        side_effect=lambda name: paths.get(name, Path(name)),
+    )
     return tmp_path
 
 
@@ -406,3 +406,12 @@ def oplocked_lock_path(
     lock_path.write_text(getattr(request, "param", ""), encoding="utf-8")
     hold_oplock(lock_path)
     return lock_path
+
+
+@pytest.fixture
+def soft_create_path() -> str:
+    return (
+        "filelock._soft._exclusive._publication.create_exclusive_non_reparse_fd"
+        if sys.platform == "win32"
+        else "os.open"
+    )

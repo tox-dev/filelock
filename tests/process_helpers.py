@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
-import filelock._soft  # simplint: ignore[private-import-path]  # tests internal behavior
 from filelock import SoftFileLock
+from filelock._filesystem import exchange_names
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -21,7 +21,6 @@ _REAP_DEADLINE: Final[int] = 5
 
 @contextmanager
 def cleanup_processes(processes: list[BaseProcess]) -> Generator[None]:
-    # Reap every process on the way out, whatever the block did.
     try:
         yield
     finally:
@@ -40,24 +39,20 @@ def cleanup_processes(processes: list[BaseProcess]) -> Generator[None]:
 def break_then_hang_after_exchange(
     lock_file: str, ready: Event, go: Event, exchanged: Event
 ) -> None:  # pragma: win32 no cover
-    # Break a stale marker, pausing right before the exchange and hanging right after it, until the test kills it.
-    exchange = filelock._soft.exchange_names
-
     def exchange_then_hang(source: str, target: str) -> bool:
         ready.set()
         go.wait()
-        exchange(source, target)
+        exchange_names(source, target)
         exchanged.set()
         while True:  # pragma: no cover  # the test kills this child, and the kill can land before this line is traced
             time.sleep(_REAP_DEADLINE)  # simplint: ignore[sleep-in-test]  # a blocked lock wait can swallow SIGTERM
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(filelock._soft, "exchange_names", exchange_then_hang)
+        patch.setattr("filelock._soft._exclusive._recovery.exchange_names", exchange_then_hang)
         SoftFileLock(lock_file).acquire(blocking=False)
 
 
 def call_within(call: Callable[[], object], seconds: float) -> tuple[bool, BaseException | None]:  # pragma: win32 cover
-    # Run *call* on a daemon thread and report whether it returned within *seconds* and what it raised.
     raised: list[BaseException] = []
 
     def run() -> None:

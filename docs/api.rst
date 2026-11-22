@@ -13,3 +13,26 @@ a build without ``fcntl``. The shared ``acquire`` / ``release`` / ``timeout`` in
 .. automodule:: filelock
     :members:
     :show-inheritance:
+    :exclude-members: BaseFileLock, BaseAsyncFileLock, AsyncReadWriteLock, AsyncSoftReadWriteLock,
+                      SoftReadWriteLock, StrictSoftFileLock
+
+.. autoclass:: filelock.BaseFileLock
+    :members:
+    :inherited-members:
+
+.. autoclass:: filelock.BaseAsyncFileLock
+    :members: acquire, run_in_executor, executor, release, loop
+
+.. autoclass:: filelock.AsyncReadWriteLock
+    :members:
+    :inherited-members:
+
+.. autoclass:: filelock.AsyncSoftReadWriteLock
+    :members:
+    :inherited-members:
+
+.. autoclass:: filelock.SoftReadWriteLock
+    :members: get_lock, generation, compromise, read_lock, acquire_read, release, write_lock, acquire_write, close
+
+.. autoclass:: filelock.StrictSoftFileLock
+    :members: claims, lock_path_occupant, release_with_timeout, force_break
