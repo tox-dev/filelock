@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import threading
+from contextlib import nullcontext
 from errno import EACCES
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -29,6 +30,8 @@ def lost_windows_doorway(initialized_lock_path: Path, mocker: MockerFixture) -> 
     assert sys.platform == "win32"
     from filelock._soft._strict import _windows as strict_windows
 
+    # These tests need published claims before they can exercise withdrawal.
+    mocker.patch.object(strict_windows, "cancelling_oplock_wait", autospec=True, return_value=nullcontext())
     rename = strict_windows.rename_open_file
     token = mocker.patch("secrets.token_hex", autospec=True, side_effect=lambda size: "f" * (size * 2))
     winner = Path(f"{initialized_lock_path}.filelock") / "claims" / f"intent-v1-{'0' * 32}.claim"
