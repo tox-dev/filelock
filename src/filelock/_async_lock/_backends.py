@@ -45,7 +45,9 @@ from ._owners import TASKS_THREAD_ID, task_owners_for
 if TYPE_CHECKING:
     from collections.abc import Callable, MutableMapping
     from concurrent.futures import ThreadPoolExecutor
+    from types import TracebackType
 
+    from filelock import AsyncReadWriteLock, AsyncSoftReadWriteLock
     from filelock._core import AcquireReturnProxy
 
 
@@ -296,8 +298,28 @@ class AsyncReadWriteBase(ForkResettable, Generic[_Backend]):
                 registry.pop(worker, None)
 
 
+_LockT = TypeVar("_LockT", bound="AsyncReadWriteLock | AsyncSoftReadWriteLock")
+
+
+class AsyncReadWriteProxy(Generic[_LockT]):
+    def __init__(self, lock: _LockT) -> None:
+        self.lock: _LockT = lock
+
+    @abstractmethod
+    async def __aenter__(self) -> _LockT: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.lock.release()
+
+
 __all__ = [
     "AsyncReadWriteBase",
+    "AsyncReadWriteProxy",
     "AsyncSoftFileLease",
     "AsyncSoftFileLock",
     "AsyncStrictSoftFileLock",

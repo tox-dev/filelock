@@ -18,6 +18,7 @@ __lazy_modules__ = [
 
 from ._backends import (
     AsyncReadWriteBase,
+    AsyncReadWriteProxy,
     AsyncSoftFileLease,
     AsyncSoftFileLock,
     AsyncStrictSoftFileLock,
@@ -40,6 +41,7 @@ __all__ = [
     "AsyncFileLockContext",
     "AsyncFileLockMeta",
     "AsyncReadWriteBase",
+    "AsyncReadWriteProxy",
     "AsyncSoftFileLease",
     "AsyncSoftFileLock",
     "AsyncStrictSoftFileLock",

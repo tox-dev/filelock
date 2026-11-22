@@ -203,7 +203,7 @@ class SoftFileLease(MarkerSoftFileLock):
         )
         thread: Final[Thread] = Thread(target=loop.run, name=f"filelock-lease-{os.getpid()}", daemon=True)
         # Release may race acquisition before the worker starts.
-        claim.heartbeat = _Heartbeat(thread=thread, stop=stop)
+        claim.heartbeat = LeaseHeartbeat(thread=thread, stop=stop)
         thread.start()
 
     def _report_compromise(
@@ -325,12 +325,24 @@ class SoftFileLease(MarkerSoftFileLock):
 
 
 class LeaseClaim:
+    """
+    State of a soft lease in one lock context.
+
+    :ivar token: identity written to the marker for the current claim, or None
+    :ivar compromise: why the claim was lost, or None
+    :ivar heartbeat: active refresh thread and stop event, or None
+    """
+
     __slots__ = ("compromise", "heartbeat", "token")
 
+    token: str | None
+    compromise: LeaseCompromise | None
+    heartbeat: LeaseHeartbeat | None
+
     def __init__(self) -> None:
-        self.token: str | None = None
-        self.compromise: LeaseCompromise | None = None
-        self.heartbeat: _Heartbeat | None = None
+        self.token = None
+        self.compromise = None
+        self.heartbeat = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -397,12 +409,6 @@ class _RefreshLoop:
         return "ok", None
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class _Heartbeat:
-    thread: Thread
-    stop: Event
-
-
 @dataclass(frozen=True)
 class LeaseCompromise:
     """
@@ -428,9 +434,27 @@ def _parent_is_missing(path: str) -> bool:
     return False
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LeaseHeartbeat:
+    """
+    Refresh thread for one lease claim.
+
+    :param thread: thread that refreshes the marker
+    :param stop: event that asks the thread to stop refreshing
+    """
+
+    thread: Thread
+    stop: Event
+
+
+# Existing pickles name the heartbeat class here.
+_Heartbeat = LeaseHeartbeat
+
+
 __all__ = [
     "CompromiseReason",
     "LeaseClaim",
     "LeaseCompromise",
+    "LeaseHeartbeat",
     "SoftFileLease",
 ]

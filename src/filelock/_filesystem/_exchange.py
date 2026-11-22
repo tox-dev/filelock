@@ -9,11 +9,12 @@ if TYPE_CHECKING:
 
 __spec__ = cast("ModuleSpec", __spec__)
 
-__lazy_modules__ = ["pathlib", "platform", "secrets", f"{__spec__.parent}._files"]
+__lazy_modules__ = ["pathlib", "platform", "re", "secrets", f"{__spec__.parent}._files"]
 
 import errno
 import os
 import platform
+import re
 import secrets
 import stat
 import sys
@@ -29,6 +30,16 @@ from ._files import write_all
 if TYPE_CHECKING:
     import ctypes
     from collections.abc import Callable, Generator
+
+
+_BREAK_HEADER: Final[str] = "filelock/break\n"
+
+
+def break_marker_pid(content: str | None) -> int | None:
+    if content is not None and (match := re.fullmatch(rf"{_BREAK_HEADER}([0-9]+)\n", content)):
+        with suppress(ValueError):
+            return int(match[1])
+    return None
 
 
 def remove_own_file(lock_file: str, fd: int) -> None:  # pragma: win32 no cover
@@ -50,7 +61,7 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
     # A peer may have replaced the observed marker, even on filesystems with coarse timestamps.
     if (current := os.lstat(lock_file)).st_mtime != mtime_before or current.st_ino != ino_before:
         return
-    break_path: Final[str] = f"{lock_file}.break.{os.getpid()}.{secrets.token_hex(16)}"
+    break_path: Final[str] = break_marker_path(lock_file, os.getpid())
     if exchange_supported():  # pragma: win32 no cover
         # Keep the lock path occupied while checking which marker the exchange displaced.
         fd: Final[int] = os.open(break_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -58,7 +69,7 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
         try:
             try:
                 with suppress(OSError):
-                    write_all(fd, f"filelock/break\n{os.getpid()}\n".encode())
+                    write_break_marker(fd)
                     exchange_names(break_path, lock_file)
                 grabbed = os.lstat(break_path)
             finally:
@@ -83,6 +94,10 @@ def break_lock_file(lock_file: str, mtime_before: float, ino_before: int) -> Non
             with suppress(OSError):
                 os.link(break_path, lock_file, follow_symlinks=False)
                 unlink_path(break_path)
+
+
+def break_marker_path(lock_file: str, pid: int) -> str:
+    return f"{lock_file}.break.{pid}.{secrets.token_hex(16)}"
 
 
 def exchange_supported() -> bool:
@@ -146,6 +161,10 @@ def _renameat2(libc: ctypes.CDLL) -> Callable[[bytes, bytes, int], int] | None: 
         return 0 if syscall(*arguments) == 0 else ctypes.get_errno()
 
     return call_renameat2
+
+
+def write_break_marker(fd: int) -> None:
+    write_all(fd, f"{_BREAK_HEADER}{os.getpid()}\n".encode("ascii"))
 
 
 def exchange_names(source: str, target: str) -> bool:  # pragma: win32 no cover
@@ -212,9 +231,12 @@ _MOVES_WITHOUT_EXCHANGE: Final[bool] = sys.platform == "win32"
 
 __all__ = [
     "break_lock_file",
+    "break_marker_path",
+    "break_marker_pid",
     "exchange_back",
     "exchange_names",
     "exchange_supported",
     "remove_own_file",
     "unlink_path",
+    "write_break_marker",
 ]

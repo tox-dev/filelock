@@ -224,10 +224,20 @@ def _release_timeout(value: float) -> float:
 
 
 class StrictRelease(Future[None]):
+    """
+    Future for a strict lock release that may finish after its deadline on Windows.
+
+    :ivar guard: mutex protecting the start and completion of this release
+    :ivar worker: thread performing the release, or None before it starts
+    """
+
+    guard: RLock
+    worker: Thread | None
+
     def __init__(self) -> None:  # pragma: win32 cover
         super().__init__()
         self.guard = RLock()
-        self.worker: Thread | None = None
+        self.worker = None
 
 
 __all__ = [

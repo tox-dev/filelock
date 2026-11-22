@@ -35,9 +35,9 @@ from ._settings import (
 )
 
 if TYPE_CHECKING:
-    import contextlib
     from collections.abc import Callable, Hashable
     from concurrent.futures import Future
+    from contextlib import ExitStack
     from types import FrameType
 
     from filelock._soft import LeaseClaim, StrictRelease
@@ -45,6 +45,15 @@ if TYPE_CHECKING:
 
 @dataclass(eq=False, slots=True, kw_only=True)  # simplint: ignore[dataclass-frozen]  # release records its outcome here
 class InFlight:
+    """
+    One acquisition that may need to be rolled back after an interrupt.
+
+    :param frame: frame performing the acquisition
+    :param levels_before: hold count before this acquisition, once known
+    :param voided: a release discarded this acquisition's hold
+    :param rolled_back: cleanup already reversed this acquisition
+    """
+
     frame: FrameType
     levels_before: int | None = None
     voided: bool = False
@@ -53,6 +62,39 @@ class InFlight:
 
 @dataclass  # simplint: ignore[dataclass-slots, dataclass-kw-only]  # base rejects slots; signature is public
 class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields are public API
+    """
+    Settings and ownership state for an exclusive lock.
+
+    :param lock_file: filesystem path used for locking
+    :param timeout: default wait in seconds
+    :param mode: permissions requested for a newly created lock file
+    :param blocking: whether to wait on contention
+    :param poll_interval: seconds between attempts
+    :param lifetime: optional age in seconds at which a stale lock becomes reclaimable
+    :param lock_file_fd: descriptor held by the current owner
+    :param lock_file_fd_token: registration used to clean up the descriptor after a fork
+    :param lock_file_fd_identity: device and inode of the held descriptor
+    :param pending_lock_file_fd: descriptor opened before acquisition commits
+    :param pending_lock_file_fd_identity: device and inode of the pending descriptor
+    :param lock_counter: number of nested holds
+    :param lock_file_key: key identifying the held lock in its owner's registry
+    :param lock_file_registry: acquiring thread's registry, retained for cross-thread release
+    :param owner_claim_paths: published paths for this owner's strict-lock claims
+    :param claim_deadline: monotonic deadline for acquiring or withdrawing strict claims
+    :param claim_withdrawal: pending withdrawal of strict-lock claims and its outcome
+    :param strict_release: completion of a deferred strict-lock release
+    :param claim_descriptors: descriptors keyed by strict-lock claim path
+    :param claim_protection: resources retained to protect published strict-lock claims
+    :param releasing: frame currently releasing the lock
+    :param acquiring: frame currently acquiring the lock
+    :param claim_root: resolved lock path used during this acquisition or hold
+    :param lease_claim: token, refresh thread and compromise state of a renewable lease
+    :param lock_generation: generation used to distinguish successive holds
+    :param in_flight: acquisition frames that may still need rollback
+    :param unlock_uncertain: whether an interrupted release may have unlocked the descriptor
+    :ivar soft_fallback: whether the Unix backend uses a soft marker for this path
+    """
+
     lock_file: str
     timeout: float
     mode: int
@@ -74,7 +116,7 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
     claim_withdrawal: Future[tuple[list[str], list[BaseException]]] | None = None
     strict_release: StrictRelease | None = None
     claim_descriptors: dict[str, int] | None = None
-    claim_protection: contextlib.ExitStack[bool | None] | None = None
+    claim_protection: ExitStack[bool | None] | None = None
     # A signal handler must not release a descriptor its interrupted frame already closed.
     releasing: FrameType | None = None
     acquiring: FrameType | None = None
@@ -94,6 +136,18 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
         blocking: bool | None,
         cancel_check: Callable[[], bool] | None,
     ) -> AcquireWait:
+        """
+        Resolve per-call overrides against this context's settings.
+
+        :param timeout: wait limit in seconds, or None for the context default
+        :param poll_interval: seconds between attempts, or None for the context default
+        :param poll_intervall: deprecated spelling that overrides poll_interval when supplied
+        :param blocking: whether to wait, or None for the context default
+        :param cancel_check: optional callback that ends the wait when it returns true
+        :returns: resolved wait settings and their monotonic start time
+        :raises TypeError: a setting has the wrong type
+        :raises ValueError: a blocking timeout is NaN or the polling interval is out of range
+        """
         timeout = self.timeout if timeout is None else timeout
         blocking = self.blocking if blocking is None else blocking
 
@@ -111,6 +165,16 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
 
 
 class AcquireWait(NamedTuple):
+    """
+    Resolved settings for one acquisition attempt.
+
+    :param blocking: whether contention permits another attempt
+    :param cancel_check: optional callback that ends a pending wait when it returns true
+    :param timeout: wait limit in seconds, or a negative value for no limit
+    :param poll_interval: seconds between attempts
+    :param start_time: reading from :func:`time.perf_counter` when the wait began
+    """
+
     blocking: bool
     cancel_check: Callable[[], bool] | None
     timeout: float

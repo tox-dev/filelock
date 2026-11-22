@@ -15,7 +15,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
-from filelock._async_lock import AsyncReadWriteBase
+from filelock._async_lock import AsyncReadWriteBase, AsyncReadWriteProxy
 from filelock._core import ensure_current_process, override, register_fork_object
 
 from ._hold import lost_hold_error
@@ -25,7 +25,6 @@ if TYPE_CHECKING:
     import asyncio
     from collections.abc import AsyncGenerator, Callable
     from concurrent import futures
-    from types import TracebackType
     from typing import Literal
 
     from filelock import LeaseCompromise
@@ -187,7 +186,7 @@ class AsyncSoftReadWriteLock(AsyncReadWriteBase[SoftReadWriteLock]):
         self._forget_inherited_workers()
 
 
-class AsyncAcquireSoftReadWriteReturnProxy:
+class AsyncAcquireSoftReadWriteReturnProxy(AsyncReadWriteProxy[AsyncSoftReadWriteLock]):
     """
     Async context-aware object that releases an :class:`AsyncSoftReadWriteLock` on exit.
 
@@ -195,18 +194,11 @@ class AsyncAcquireSoftReadWriteReturnProxy:
     """
 
     def __init__(self, lock: AsyncSoftReadWriteLock) -> None:
-        self.lock = lock
+        super().__init__(lock)
 
+    @override
     async def __aenter__(self) -> AsyncSoftReadWriteLock:
         return self.lock
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self.lock.release()
 
 
 __all__ = [

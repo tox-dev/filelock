@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import os
+from abc import ABCMeta
 from contextlib import ContextDecorator
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import local
 from typing import TYPE_CHECKING, Final, override
 
 from docutils.nodes import Element, Text, reference
@@ -81,6 +83,15 @@ html_css_files = ["custom.css"]
 html_title, html_last_updated_fmt = name, now.isoformat()
 pygments_style, pygments_dark_style = "sphinx", "monokai"
 autoclass_content, autodoc_member_order, autodoc_typehints = "both", "bysource", "none"
+# Dataclasses copy base field annotations into the subclass constructor, outside the module that imports these types.
+autodoc_type_aliases = {
+    "ExitStack": "contextlib.ExitStack",
+    "FrameType": "types.FrameType",
+    "Future": "concurrent.futures.Future",
+    "InFlight": "filelock.InFlight",
+    "LeaseClaim": "filelock.LeaseClaim",
+    "StrictRelease": "filelock.StrictRelease",
+}
 # _typeshed exists only inside type checkers; sphinx-autodoc-typehints executes TYPE_CHECKING imports to resolve hints.
 autodoc_mock_imports = ["_typeshed"]
 autodoc_default_options = {"member-order": "bysource", "undoc-members": True, "show-inheritance": True}
@@ -99,6 +110,13 @@ extlinks = {
 
 
 def setup(app: Sphinx) -> None:
+    public_targets = {}
+    for module in (filelock.asyncio, filelock):
+        for export in module.__all__:
+            cls = getattr(module, export)
+            if isinstance(cls, type) and cls.__name__ == export:
+                public_targets[f"{cls.__module__}.{cls.__qualname__}"] = f"{module.__name__}.{export}"
+
     class PatchedPythonDomain(PythonDomain):
         @override
         def resolve_xref(
@@ -111,6 +129,8 @@ def setup(app: Sphinx) -> None:
             node: pending_xref,
             contnode: Element,
         ) -> reference | None:
+            if target in public_targets:
+                target = node["reftarget"] = public_targets[target]
             mapping = {
                 "_thread._local": ("threading.local", "local"),
                 "asyncio.events.AbstractEventLoop": ("asyncio.AbstractEventLoop", "AbstractEventLoop"),
@@ -129,14 +149,16 @@ def setup(app: Sphinx) -> None:
 
 
 def _public_bases(_app: Sphinx, _name: str, cls: type, _options: SimpleNamespace | None, bases: list[type]) -> None:
-    if any(base.__module__.startswith("filelock.") and base.__name__ not in filelock.__all__ for base in cls.__bases__):
-        # Readers see the same base names they can import from filelock.
-        bases[:] = [
-            next(
-                (base for base in cls.__mro__[1:] if base.__name__ in filelock.__all__ or base is ContextDecorator),
-                object,
-            )
-        ]
+    exports = {*filelock.__all__, *filelock.asyncio.__all__}
+    if any(base.__module__.startswith("filelock.") and base.__name__ not in exports for base in cls.__bases__):
+        # Skip private mixins while retaining unrelated public bases, such as threading.local.
+        public = []
+        for base in cls.__mro__[1:]:
+            if (base.__name__ in exports or base in {ABCMeta, ContextDecorator, local}) and not any(
+                issubclass(child, base) for child in public
+            ):
+                public.append(base)
+        bases[:] = public or [object]
 
 
 def _public_override(

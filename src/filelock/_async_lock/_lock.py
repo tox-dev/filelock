@@ -49,6 +49,8 @@ _AT = TypeVar("_AT", bound="BaseAsyncFileLock")
 
 
 class AsyncFileLockMeta(FileLockMeta):
+    """Select the executor policy and apply singleton options when constructing an async lock."""
+
     __module__ = "filelock.asyncio"
 
     @override
@@ -349,6 +351,17 @@ def _new_transition_gate() -> AsyncTransitionGate:
 
 @dataclass  # simplint: ignore[dataclass-frozen, dataclass-slots, dataclass-kw-only]  # established mutable context
 class AsyncFileLockContext(FileLockContext):
+    """
+    Settings and ownership state for one asynchronous lock.
+
+    :ivar run_in_executor: whether backend operations run in an executor
+    :ivar executor: executor for backend calls, or ``None`` for the event loop's default
+    :ivar loop: event loop for backend operations, or ``None`` for the running loop
+    :ivar releasing_through_backend: whether backend release is already in progress
+    :ivar transition_gate: serializes changes to this context's ownership
+    :ivar rollback_tried: whether an interrupted acquisition already attempted rollback
+    """
+
     run_in_executor: bool = True
     executor: futures.Executor | None = None
     loop: asyncio.AbstractEventLoop | None = None
@@ -361,6 +374,22 @@ class AsyncFileLockContext(FileLockContext):
 
 
 class AsyncThreadLocalFileContext(AsyncFileLockContext, ThreadLocalFileContext):
+    """
+    Keep separate acquisition state for each thread using the lock.
+
+    :param lock_file: filesystem path used for locking
+    :param timeout: default acquisition timeout in seconds
+    :param mode: permissions for newly created lock files
+    :param blocking: whether acquisition waits on contention
+    :param poll_interval: delay between acquisition attempts in seconds
+    :param lifetime: maximum age in seconds for a lock subject to expiry
+    :param run_in_executor: whether backend operations run in an executor
+    :param executor: executor for backend calls, or ``None`` for the event loop's default
+    :param loop: event loop for backend operations, or ``None`` for the running loop
+    :ivar current: this thread's :class:`~filelock.FileLockContext`, initially an
+        :class:`~filelock.asyncio.AsyncFileLockContext`
+    """
+
     # threading.local runs __init__ again with these arguments the first time each thread touches the context.
     def __init__(  # ruff:ignore[too-many-arguments]  # mirrors the AsyncFileLockContext fields set at construction
         self,

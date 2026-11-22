@@ -13,7 +13,16 @@ __lazy_modules__ = [f"{__spec__.parent}._exchange", f"{__spec__.parent}._files",
 
 import sys
 
-from ._exchange import break_lock_file, exchange_back, exchange_names, exchange_supported, remove_own_file
+from ._exchange import (
+    break_lock_file,
+    break_marker_path,
+    break_marker_pid,
+    exchange_back,
+    exchange_names,
+    exchange_supported,
+    remove_own_file,
+    write_break_marker,
+)
 from ._files import (
     ensure_directory_exists,
     open_into,
@@ -55,6 +64,8 @@ if sys.platform == "win32":  # pragma: win32 cover
     __all__ = [
         "DirectoryPinBlockedError",
         "break_lock_file",
+        "break_marker_path",
+        "break_marker_pid",
         "cancelling_oplock_wait",
         "create_deletable_fd",
         "create_exclusive_non_reparse_fd",
@@ -87,12 +98,15 @@ if sys.platform == "win32":  # pragma: win32 cover
         "unpin_directory",
         "write_all",
         "write_at_start",
+        "write_break_marker",
     ]
 else:  # pragma: win32 no cover
     from ._exchange import unlink_path
 
     __all__ = [
         "break_lock_file",
+        "break_marker_path",
+        "break_marker_pid",
         "ensure_directory_exists",
         "exchange_back",
         "exchange_names",
@@ -106,4 +120,5 @@ else:  # pragma: win32 no cover
         "unlink_path",
         "write_all",
         "write_at_start",
+        "write_break_marker",
     ]

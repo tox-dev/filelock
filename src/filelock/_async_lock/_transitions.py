@@ -17,12 +17,21 @@ if TYPE_CHECKING:
 
 
 class AsyncTransitionGate:
+    """Give one task at a time access to a lock transition, in arrival order."""
+
     def __init__(self) -> None:
         self._queue_lock: Final[Lock] = Lock()
         self._queue: Final[deque[ConcurrentFuture[None]]] = deque()
 
     @contextlib.asynccontextmanager
     async def hold(self, *, owed: Callable[[], bool] | None = None) -> AsyncGenerator[asyncio.CancelledError | None]:
+        """
+        Wait for a turn to complete a transition.
+
+        :param owed: keep a canceled task queued while it still owes a release
+        :yields: the deferred cancellation, or None if the wait was uninterrupted
+        :raises asyncio.CancelledError: the caller was canceled without an outstanding release
+        """
         ticket: ConcurrentFuture[None] = ConcurrentFuture()
         cancellation: asyncio.CancelledError | None = None
 
@@ -106,6 +115,16 @@ class AsyncTransitionGate:
         deadline: float | None,
         poll_interval: float,
     ) -> AsyncGenerator[None]:
+        """
+        Wait for a turn to attempt acquisition.
+
+        :param blocking: whether to queue behind another transition
+        :param cancel_check: optional callback that cancels a queued wait when it returns true
+        :param deadline: absolute :func:`time.perf_counter` deadline, or None for no limit
+        :param poll_interval: seconds between cancellation and deadline checks
+        :yields: None while the caller owns the turn
+        :raises AsyncTransitionUnavailableError: a queued wait was refused, canceled or timed out
+        """
         ticket: ConcurrentFuture[None] = ConcurrentFuture()
         try:
             self._join(ticket)
@@ -123,7 +142,7 @@ class AsyncTransitionGate:
 
 
 class AsyncTransitionUnavailableError(Exception):
-    pass
+    """A queued task could not enter an acquisition transition."""
 
 
 __all__ = [
