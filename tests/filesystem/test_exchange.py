@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from contextlib import suppress
 from pathlib import Path
@@ -10,7 +11,13 @@ import pytest
 
 import filelock._filesystem._exchange  # simplint: ignore[private-import-path]  # wrap the Windows rename pin
 from filelock import SoftFileLock, Timeout
-from filelock._filesystem import break_lock_file, exchange_names
+from filelock._filesystem import (
+    break_lock_file,
+    break_marker_path,
+    break_marker_pid,
+    exchange_names,
+    write_break_marker,
+)
 from tests.capability_marks import NEEDS_STALE_RECLAIM, NEEDS_SYMLINK, NEEDS_UNLINK_OPEN_FILE
 from tests.conftest import DEAD_HOLDER
 from tests.filesystem.conftest import replace_with_same_mtime, rewrite_in_place
@@ -21,6 +28,28 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
 
     from pytest_mock import MockerFixture
+
+
+def test_break_marker_format(tmp_path: Path) -> None:
+    name = Path(break_marker_path(str(tmp_path / "test.lock"), os.getpid()))
+    assert re.fullmatch(rf"test\.lock\.break\.{os.getpid()}\.[0-9a-f]{{32}}", name.name)
+    with name.open("xb") as marker:
+        write_break_marker(marker.fileno())
+    assert name.read_bytes() == f"filelock/break\n{os.getpid()}\n".encode("ascii")
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        pytest.param("filelock/break\n007\n", 7, id="leading-zeros"),
+        pytest.param("filelock/break\n\uff10\uff17\n", None, id="non-ascii-pid"),
+        pytest.param("filelock/break\n+7\n", None, id="signed-pid"),
+        pytest.param("filelock/break\n7", None, id="torn-record"),
+        pytest.param("filelock/break\n7\n\n", None, id="extra-line"),
+    ],
+)
+def test_break_marker_pid(record: str, expected: int | None) -> None:
+    assert break_marker_pid(record) == expected
 
 
 @NEEDS_STALE_RECLAIM

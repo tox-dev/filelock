@@ -16,12 +16,13 @@ from typing import TYPE_CHECKING, Final, cast
 
 from filelock._core import BaseFileLock, canonical, override, resolve_lifetime
 from filelock._filesystem import (
+    break_marker_path,
     exchange_back,
     exchange_names,
     exchange_supported,
     foreign_owner,
     open_into,
-    write_all,
+    write_break_marker,
 )
 
 if TYPE_CHECKING:
@@ -368,11 +369,11 @@ else:  # pragma: win32 no cover
             marker = os.fstat(fd)
             if not os.path.samestat(os.lstat(self._lock_path), marker):
                 return
-            aside = f"{self._lock_path}.break.{os.getpid()}.{secrets.token_hex(16)}"
+            aside = break_marker_path(self._lock_path, os.getpid())
             opened: list[int] = []
             try:
                 pin = open_into(opened, aside, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                write_all(pin, f"filelock/break\n{os.getpid()}\n".encode())
+                write_break_marker(pin)
                 exchange_names(aside, self._lock_path)
             finally:
                 for pin in opened:

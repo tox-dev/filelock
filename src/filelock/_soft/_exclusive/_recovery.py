@@ -24,6 +24,8 @@ from typing import Final
 from filelock._core import override
 from filelock._filesystem import (
     break_lock_file,
+    break_marker_path,
+    break_marker_pid,
     exchange_back,
     exchange_names,
     exchange_supported,
@@ -34,7 +36,6 @@ from filelock._identity import host_name, owner_is_stale
 from filelock._soft import (
     MALFORMED_LOCK_AGE_THRESHOLD,
     STRICT_SOFT_SENTINEL_RECORD,
-    parse_decimal,
     parse_lock_holder,
     read_lock_file,
 )
@@ -73,7 +74,7 @@ class MarkerRecovery(MarkerPublication):
             if holder is None:
                 # A peer may still be writing the marker after exclusive creation.
                 if self._marker_unchanged_for(marker) >= MALFORMED_LOCK_AGE_THRESHOLD:
-                    self._take_over(marker, _placeholder_breaker(content))
+                    self._take_over(marker, break_marker_pid(content))
                 return
 
             if owner_is_stale(*holder):
@@ -100,7 +101,7 @@ class MarkerRecovery(MarkerPublication):
             return
         if breaker_pid is not None and self._restore_stranded_marker(breaker_pid, marker):
             return
-        aside: Final[str] = f"{self._lock_path}.break.{os.getpid()}.{secrets.token_hex(16)}"
+        aside: Final[str] = break_marker_path(self._lock_path, os.getpid())
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         opened: Final[list[int]] = []
         identity: tuple[int, int] | None = None
@@ -202,7 +203,7 @@ class MarkerRecovery(MarkerPublication):
     def _return_claim(self, own: str, breaker_pid: int) -> None:  # pragma: win32 no cover
         # A later poll can retry a refused rename under this process's PID.
         with suppress(OSError):
-            Path(own).rename(f"{self._lock_path}.break.{breaker_pid}.{secrets.token_hex(16)}")
+            Path(own).rename(break_marker_path(self._lock_path, breaker_pid))
 
     @classmethod
     def _marker_is_live(cls, content: str | None, breaker_pid: int) -> bool:  # pragma: win32 no cover
@@ -254,14 +255,6 @@ class MarkerRecovery(MarkerPublication):
     @classmethod
     def _recorded_holder(cls, content: str | None) -> tuple[int, str] | None:
         return None if (holder := parse_lock_holder(content)) is None else holder[:2]
-
-
-def _placeholder_breaker(content: str | None) -> int | None:  # pragma: win32 no cover
-    if content is None or not content.startswith(placeholder := "filelock/break\n") or not content.endswith("\n"):
-        return None
-    with suppress(ValueError):
-        return parse_decimal(content.removeprefix(placeholder)[:-1])
-    return None
 
 
 def _begin_claim(name: str | Path) -> bool:  # pragma: win32 no cover
