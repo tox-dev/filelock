@@ -16,3 +16,8 @@ def test_public_global_pickles_by_reference(name: str) -> None:
     value = getattr(filelock, name)
     payload = pickle.dumps(value)
     assert pickle.loads(payload) is value  # ruff:ignore[suspicious-pickle-usage]  # payload made here
+
+
+def test_lease_heartbeat_keeps_its_old_pickle_name() -> None:
+    payload = b"cfilelock._soft._lease\n_Heartbeat\n."
+    assert pickle.loads(payload) is filelock.LeaseHeartbeat  # ruff:ignore[suspicious-pickle-usage]  # fixed payload

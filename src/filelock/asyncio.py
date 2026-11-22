@@ -9,8 +9,7 @@ if TYPE_CHECKING:
 
 __lazy_modules__ = [f"{__spec__.parent}._async_lock"]
 
-# Explicit imports also support the context classes and metaclass omitted from __all__.
-from ._async_lock import (  # ruff:ignore[unused-import]
+from ._async_lock import (
     AsyncAcquireReturnProxy,
     AsyncFileLockContext,
     AsyncFileLockMeta,
@@ -18,6 +17,8 @@ from ._async_lock import (  # ruff:ignore[unused-import]
     AsyncSoftFileLock,
     AsyncStrictSoftFileLock,
     AsyncThreadLocalFileContext,
+    AsyncTransitionGate,
+    AsyncTransitionUnavailableError,
     AsyncUnixFileLock,
     AsyncWindowsFileLock,
     BaseAsyncFileLock,
@@ -31,9 +32,14 @@ def __dir__() -> list[str]:
 
 __all__ = [
     "AsyncAcquireReturnProxy",
+    "AsyncFileLockContext",
+    "AsyncFileLockMeta",
     "AsyncSoftFileLease",
     "AsyncSoftFileLock",
     "AsyncStrictSoftFileLock",
+    "AsyncThreadLocalFileContext",
+    "AsyncTransitionGate",
+    "AsyncTransitionUnavailableError",
     "AsyncUnixFileLock",
     "AsyncWindowsFileLock",
     "BaseAsyncFileLock",

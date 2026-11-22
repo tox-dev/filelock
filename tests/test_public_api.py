@@ -48,7 +48,23 @@ def test_has_fcntl_matches_native_unix_alias() -> None:
 
 
 def test_public_literal_aliases_list_their_values() -> None:
-    assert (get_args(filelock.OwnerMode), get_args(filelock.CompromiseReason)) == (
+    assert (
+        get_args(filelock.CloseErrorPolicy),
+        get_args(filelock.ContextErrorPolicy),
+        get_args(filelock.StrictSoftFileClaimState),
+        get_args(filelock.OwnerMode),
+        get_args(filelock.CompromiseReason),
+    ) == (
+        ("default", "raise", "suppress"),
+        ("chain", "group"),
+        ("intent", "held"),
         ("lease", "exclusive", "unknown"),
         ("marker-missing", "owner-changed", "refresh-failed", "evicted"),
     )
+
+
+def test_context_resolves_wait_settings() -> None:
+    context = filelock.FileLockContext("lock", timeout=2, mode=0o600, blocking=True, poll_interval=0.1)
+    wait = context.acquire_wait(None, 0.2, None, blocking=None, cancel_check=None)
+    assert isinstance(wait, filelock.AcquireWait)
+    assert (wait.blocking, wait.timeout, wait.poll_interval) == (True, 2, 0.2)

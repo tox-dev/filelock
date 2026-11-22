@@ -27,7 +27,7 @@ from ._records import (
 
 if TYPE_CHECKING:
     from ._exclusive import MarkerSoftFileLock, SoftFileLock
-    from ._lease import CompromiseReason, LeaseClaim, LeaseCompromise, SoftFileLease
+    from ._lease import CompromiseReason, LeaseClaim, LeaseCompromise, LeaseHeartbeat, SoftFileLease
     from ._read_write import AsyncAcquireSoftReadWriteReturnProxy, AsyncSoftReadWriteLock, SoftReadWriteLock
     from ._strict import (
         StrictRelease,
@@ -44,6 +44,7 @@ _EXPORTS: Final[MappingProxyType[str, str]] = MappingProxyType({
     "MarkerSoftFileLock": "._exclusive",
     "SoftFileLease": "._lease",
     "LeaseClaim": "._lease",
+    "LeaseHeartbeat": "._lease",
     "LeaseCompromise": "._lease",
     "CompromiseReason": "._lease",
     "AsyncAcquireSoftReadWriteReturnProxy": "._read_write",
@@ -74,6 +75,7 @@ __all__ = [
     "CompromiseReason",
     "LeaseClaim",
     "LeaseCompromise",
+    "LeaseHeartbeat",
     "MarkerSoftFileLock",
     "OwnerMode",
     "OwnerRecord",

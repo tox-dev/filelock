@@ -67,7 +67,7 @@ from ._settings import (
 )
 from ._shutdown import interpreter_exiting, resolve_lazy_imports_before_shutdown
 from ._singleton import FileLockMeta
-from ._state import AcquireWait, FileLockContext, ThreadLocalFileContext, delegate_to_current, on_this_stack
+from ._state import AcquireWait, FileLockContext, InFlight, ThreadLocalFileContext, delegate_to_current, on_this_stack
 
 __all__ = [
     "UNSET_FILE_MODE",
@@ -82,6 +82,7 @@ __all__ = [
     "ForkClassResettable",
     "ForkDescriptorOwner",
     "ForkResettable",
+    "InFlight",
     "LeaseSettingsMismatch",
     "LockOptions",
     "LockSettings",

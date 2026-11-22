@@ -1,14 +1,4 @@
-"""
-A platform independent file lock that supports the with-statement.
-
-.. autodata:: filelock.__version__
-    :no-value:
-
-.. autodata:: filelock.OwnerMode
-
-.. autodata:: filelock.CompromiseReason
-
-"""
+"""Cross-platform file locks."""
 
 from __future__ import annotations
 
@@ -29,9 +19,12 @@ from filelock.version import version
 
 from ._core import (
     AcquireReturnProxy,
+    AcquireWait,
     BaseFileLock,
     CloseErrorPolicy,
     ContextErrorPolicy,
+    FileLockContext,
+    InFlight,
     LeaseSettingsMismatch,
     LockOptions,
     ReleasePendingError,
@@ -63,13 +56,16 @@ if TYPE_CHECKING:
         AsyncAcquireSoftReadWriteReturnProxy,
         AsyncSoftReadWriteLock,
         CompromiseReason,
+        LeaseClaim,
         LeaseCompromise,
+        LeaseHeartbeat,
         MarkerSoftFileLock,
         OwnerMode,
         OwnerRecord,
         SoftFileLease,
         SoftFileLock,
         SoftReadWriteLock,
+        StrictRelease,
         StrictSoftFileClaim,
         StrictSoftFileClaimState,
         StrictSoftFileLock,
@@ -125,7 +121,9 @@ _LAZY_ATTRIBUTES: Final[dict[str, str]] = {
     "AsyncWindowsFileLock": ".asyncio",
     "BaseAsyncFileLock": ".asyncio",
     "CompromiseReason": "._soft",
+    "LeaseClaim": "._soft",
     "LeaseCompromise": "._soft",
+    "LeaseHeartbeat": "._soft",
     "MarkerSoftFileLock": "._soft",
     "OwnerMode": "._soft",
     "OwnerRecord": "._soft",
@@ -133,6 +131,7 @@ _LAZY_ATTRIBUTES: Final[dict[str, str]] = {
     "SoftFileLease": "._soft",
     "SoftFileLock": "._soft",
     "SoftReadWriteLock": "._soft",
+    "StrictRelease": "._soft",
     "StrictSoftFileClaim": "._soft",
     "StrictSoftFileClaimState": "._soft",
     "StrictSoftFileLock": "._soft",
@@ -169,6 +168,7 @@ def __dir__() -> list[str]:
 
 __all__ = [
     "AcquireReturnProxy",
+    "AcquireWait",
     "AsyncAcquireReadWriteReturnProxy",
     "AsyncAcquireReturnProxy",
     "AsyncAcquireSoftReadWriteReturnProxy",
@@ -186,7 +186,11 @@ __all__ = [
     "CompromiseReason",
     "ContextErrorPolicy",
     "FileLock",
+    "FileLockContext",
+    "InFlight",
+    "LeaseClaim",
     "LeaseCompromise",
+    "LeaseHeartbeat",
     "LeaseSettingsMismatch",
     "LockOptions",
     "MarkerSoftFileLock",
@@ -199,6 +203,7 @@ __all__ = [
     "SoftFileLockLifetimeWarning",
     "SoftFileLockProtocolError",
     "SoftReadWriteLock",
+    "StrictRelease",
     "StrictSoftFileClaim",
     "StrictSoftFileClaimState",
     "StrictSoftFileLock",
