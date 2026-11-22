@@ -1,3 +1,0 @@
-Unix locks can use the soft fallback when the directory denies the temporary probe and atomic exchange is unavailable.
-If native locking works there, new lock files exclude group and other writes by default. Set ``mode=0o660`` for group
-sharing. The probe removes its temporary name before testing and closes its descriptor on interruption.

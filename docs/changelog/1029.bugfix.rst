@@ -1,2 +1,0 @@
-On POSIX, :class:`~filelock.SoftFileLock` tries to leave a one-byte recovery record if a full filesystem prevents
-marker cleanup. With atomic exchange, a later caller can reclaim it when space is available.

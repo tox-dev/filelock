@@ -1,2 +1,0 @@
-:class:`~filelock.SoftFileLock`, :class:`~filelock.MarkerSoftFileLock` and :class:`~filelock.SoftFileLease` remove
-their pending recovery marker even if another process replaces the break name during rollback.

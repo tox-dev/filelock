@@ -1,2 +1,0 @@
-:class:`~filelock.SoftReadWriteLock` reuses the generation directory handle to reduce ownership checks during write
-acquisition and release.

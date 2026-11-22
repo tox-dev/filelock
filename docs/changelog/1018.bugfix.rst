@@ -1,2 +1,0 @@
-A singleton shared by relative and absolute paths refuses acquisition if a directory change redirects its stored lock
-path.

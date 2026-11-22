@@ -1,1 +1,0 @@
-:func:`~filelock.lock_descriptor` raises :class:`TypeError` unless ``blocking`` is a :class:`bool`.

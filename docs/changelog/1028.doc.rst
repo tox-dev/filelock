@@ -1,2 +1,0 @@
-A forked child closes the inherited :class:`~filelock.FileLock` descriptor. Daemons must create and acquire a new lock
-after forking.

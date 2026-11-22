@@ -1,2 +1,0 @@
-``SoftFileLock``, ``MarkerSoftFileLock`` and ``SoftFileLease`` remove empty markers after a signal interrupts marker
-creation or stale-marker replacement.

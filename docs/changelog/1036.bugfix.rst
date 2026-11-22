@@ -1,1 +1,0 @@
-Windows soft-lock recovery no longer reads ``proc/self/ns/pid`` from the drive root when identifying a marker's host.

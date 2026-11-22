@@ -1,3 +1,0 @@
-:class:`~filelock.SoftFileLock` and :class:`~filelock.SoftFileLease` clean up markers and descriptors across
-interrupted acquires and releases. POSIX unlink errors propagate, with a retry after close on filesystems that require
-it. Retry :meth:`~filelock.BaseFileLock.release` if a timeout interrupts restoration of a displaced marker.

@@ -6,6 +6,240 @@
 
 .. towncrier release notes start
 
+.. _release-4-3-0:
+
+********************
+ 4.3.0 (2026-11-22)
+********************
+
+.. _release-4-3-0-added:
+
+Added
+=====
+
+- On Windows, :meth:`~filelock.StrictSoftFileLock.release_with_timeout` limits the caller's wait for release. If it
+  raises :class:`~filelock.ReleasePendingError`, call :meth:`~filelock.ReleasePendingError.wait` on the exception from
+  any thread for the result. On POSIX, release is synchronous (:pr:`1107`) by :user:`gaborbernat`. (:pr:`1100`)
+
+.. _release-4-3-0-fixed:
+
+Fixed
+=====
+
+- :func:`~filelock.lock_descriptor` raises :class:`TypeError` unless ``blocking`` is a :class:`bool` (:pr:`969`) by
+  :user:`feiiiiii5` and :user:`gaborbernat`.
+- On POSIX filesystems with atomic exchange, :class:`~filelock.SoftFileLock` restores a live marker after an interrupted
+  exchange and removes its own unfinished marker during cleanup (:pr:`1080`) by :user:`gaborbernat`. (:pr:`993`)
+- Unix soft fallback markers exclude group and other writes even on filesystems without atomic exchange (:pr:`1057`) by
+  :user:`gaborbernat`. (:pr:`994`)
+- ``SoftFileLock``, ``MarkerSoftFileLock`` and ``SoftFileLease`` remove empty markers after a signal interrupts marker
+  creation or stale-marker replacement (:pr:`1049`) by :user:`gaborbernat`. (:pr:`996`)
+- Unix locks select the soft fallback per resolved path, including after a directory change. The lock keeps its Unix
+  type and supports ``pid``, ``is_lock_held_by_us``, ``break_lock()`` and ``lifetime`` during fallback (:pr:`1057`) by
+  :user:`gaborbernat`. (:pr:`1000`)
+- On POSIX, :class:`~filelock.ReadWriteLock` and :class:`~filelock.AsyncReadWriteLock` raise :class:`RuntimeError` in
+  detected subinterpreters, including ``InterpreterPoolExecutor`` workers and mod_wsgi or uWSGI subinterpreters. Use the
+  main interpreter or a separate process. Detection on embedded CPython 3.11 requires ``_xxsubinterpreters`` or
+  ``ctypes`` access to the interpreter C API (:pr:`1106`) by :user:`gaborbernat`. (:pr:`1003`)
+- On Windows, :class:`~filelock.SoftFileLock` treats a symlink as an occupied marker and leaves its target untouched
+  (:pr:`1049`) by :user:`gaborbernat`. (:pr:`1009`)
+- :class:`~filelock.SoftFileLock` and :class:`~filelock.SoftFileLease` clean up markers and descriptors across
+  interrupted acquires and releases. POSIX unlink errors propagate, with a retry after close on filesystems that require
+  it. Retry :meth:`~filelock.BaseFileLock.release` if a timeout interrupts restoration of a displaced marker
+  (:pr:`1062`) by :user:`gaborbernat`. (:pr:`1014`)
+- A singleton shared by relative and absolute paths refuses acquisition if a directory change redirects its stored lock
+  path (:pr:`1098`) by :user:`gaborbernat`. (:pr:`1018`)
+- ``ReadWriteLock`` raises ``RuntimeError`` if a directory change redirects a singleton's cached database path
+  (:pr:`1058`) by :user:`gaborbernat`. (:pr:`1019`)
+- :class:`~filelock.SoftFileLock`, :class:`~filelock.MarkerSoftFileLock` and :class:`~filelock.SoftFileLease` remove
+  their pending recovery marker even if another process replaces the break name during rollback (:pr:`1082`) by
+  :user:`gaborbernat`. (:pr:`1025`)
+- Single-threaded SQLite read and write lock waits allow Python signal handlers to run. Waiting writers keep their place
+  ahead of new readers (:pr:`1105`) by :user:`gaborbernat`. (:pr:`1027`)
+- On POSIX, :class:`~filelock.SoftFileLock` tries to leave a one-byte recovery record if a full filesystem prevents
+  marker cleanup. With atomic exchange, a later caller can reclaim it when space is available (:pr:`1101`) by
+  :user:`Yshuro` and :user:`gaborbernat`. (:pr:`1029`)
+- Windows soft-lock recovery no longer reads ``proc/self/ns/pid`` from the drive root when identifying a marker's host
+  (:pr:`1036`) by :user:`gaborbernat`.
+- On Unix filesystems without ``flock``, waiters can reclaim an interrupted acquire's recovery marker after two seconds
+  if atomic exchange and space for the marker are available (:pr:`1057`) by :user:`gaborbernat`. (:pr:`1046`)
+- ``SoftReadWriteLock`` recreates a missing generation directory during read or write acquisition, even if a holder
+  record survives (:pr:`1103`) by :user:`gaborbernat`. (:pr:`1102`)
+- On POSIX, soft locks close the inspection descriptor if opening an existing marker is interrupted (:pr:`1113`) by
+  :user:`gaborbernat`. (:pr:`1111`)
+- Unix locks can use the soft fallback when the directory denies the temporary probe and atomic exchange is unavailable.
+  If native locking works there, new lock files exclude group and other writes by default. Set ``mode=0o660`` for group
+  sharing. The probe removes its temporary name before testing and closes its descriptor on interruption (:pr:`1115`) by
+  :user:`gaborbernat`. (:pr:`1112`)
+- :class:`ReadWriteLock <filelock.ReadWriteLock>` prevents database redirection in shared, non-sticky directories by
+  placing its hard link in a fresh private directory. Cleanup recognizes older link layouts (:pr:`1096`) by
+  :user:`gaborbernat`.
+- :class:`~filelock.AsyncFileLock`, :class:`~filelock.AsyncReadWriteLock` and :class:`~filelock.AsyncSoftReadWriteLock`
+  discard executor calls whose submission failed. A queued release can no longer drop a later task's lock (:pr:`986`) by
+  :user:`gaborbernat`.
+- :class:`~filelock.SoftReadWriteLock` scans up to 256 orphan holder records and 256 temporary files per sweep, resuming
+  where it stopped. Each listing removes up to 256 obsolete generations. The lock raises a protocol error above 65,536
+  generation entries (:pr:`1097`) by :user:`gaborbernat`.
+- :class:`~filelock.SoftReadWriteLock` uses fixed-size fingerprints to bound memory use per holder record during cleanup
+  (:pr:`1097`) by :user:`gaborbernat`.
+- :class:`~filelock.StrictSoftFileLock` backs off above 1,024 public claims and raises
+  :class:`~filelock.SoftFileLockProtocolError` above 16,380 directory entries before publication. Sentinel cleanup
+  counts only the lock's own records (:pr:`1040`) by :user:`gaborbernat`.
+- :class:`~filelock.StrictSoftFileLock` creates sentinels and claims without group or other write permissions. Run
+  ``chmod go-w`` on older writable sentinels. On Linux, a contender waits if ``fs.protected_hardlinks`` prevents it from
+  probing another account's claim (:pr:`985`) by :user:`gaborbernat`.
+- :class:`~filelock.Timeout` and :attr:`~filelock.StrictSoftFileLock.lock_path_occupant` now escape control characters
+  and other bytes outside printable non-space ASCII in recorded hostnames (:pr:`1090`) by :user:`radhika1314` and
+  :user:`gaborbernat`.
+- A :class:`~filelock.SoftReadWriteLock` heartbeat checks the holder token before writing. If another file replaces the
+  record and reuses its inode, the lock reports a lost hold (:pr:`982`) by :user:`gaborbernat`.
+- A :class:`~filelock.SoftReadWriteLock` waiter paused past ``stale_threshold`` gets a fresh token so cleanup of its old
+  record cannot remove the new hold (:pr:`1097`) by :user:`gaborbernat`.
+- A failed acquire rolls back its own nesting level. Releasing that level from a hook or signal handler raises
+  :exc:`RuntimeError`. Balanced nested holds still work. Retrying an interrupted release on a shared instance affects
+  only the original hold. An indefinite acquire raises :exc:`RuntimeError` if a signal handler returns holding the same
+  path through another instance (:pr:`1060`) by :user:`gaborbernat`.
+- A forked child with its parent's numeric PID in another Linux PID namespace preserves the parent's locks and private
+  SQLite database link (:pr:`1075`) by :user:`gaborbernat`.
+- After an ambiguous Unix unlock error, :class:`~filelock.FileLock` rejects reentrant acquires until an explicit
+  ``release()`` retry resolves the hold (:pr:`1098`) by :user:`gaborbernat`.
+- Async reader/writer wrappers sharing a lock serve waiting writers in arrival order, ahead of new readers. Returning
+  writers rejoin at the back (:pr:`1073`) by :user:`gaborbernat`.
+- At interpreter exit, :class:`~filelock.SoftReadWriteLock` keeps holds owned by live daemon threads.
+  :class:`~filelock.AsyncSoftReadWriteLock` keeps holds whose event loops are still running (:pr:`1048`) by
+  :user:`gaborbernat`.
+- Canceling an :class:`~filelock.AsyncFileLock` release still decrements the lock counter after the active transition
+  finishes (:pr:`1051`) by :user:`gaborbernat`.
+- Closing an async reader/writer wrapper stops its contended acquires on the next poll, even if another singleton
+  wrapper is waiting (:pr:`1073`) by :user:`gaborbernat`.
+- Closing an async reader/writer wrapper wakes tasks waiting on that wrapper even if another singleton wrapper holds the
+  lock (:pr:`1073`) by :user:`gaborbernat`.
+- During shutdown, another thread's ``release(force=True)`` preserves the main thread's thread-local hold, including
+  during ``atexit`` callbacks (:pr:`1098`) by :user:`gaborbernat`.
+- If an async reader/writer acquire succeeds during close, it waits for close to finish. A successful close releases the
+  hold and the acquire raises the closed error. If close fails while the lock is held, the task receives the hold
+  (:pr:`1073`) by :user:`gaborbernat`.
+- In a sticky Unix directory such as ``/tmp``, :class:`~filelock.ReadWriteLock` raises :class:`PermissionError` unless
+  the caller or directory owner owns the database (:pr:`970`) by :user:`radhika1314` and :user:`gaborbernat`.
+- In sticky directories, locks reject files and protocol directories whose ownership is ambiguous because Linux reports
+  the overflow UID (:pr:`977`) by :user:`gaborbernat`.
+- Linux accounts without ``CAP_FOWNER`` can use their own native, strict soft and soft reader/writer locks in sticky
+  directories even with an overflow UID or unreadable procfs. This includes OverlayFS containers. Use a private
+  directory if ownership cannot be verified (:pr:`1099`) by :user:`gaborbernat`.
+- Linux soft locks ignore a mounted-over boot ID and compare process start times, preserving live markers across mounts
+  (:pr:`1063`) by :user:`gaborbernat`.
+- On Linux, :class:`~filelock.ReadWriteLock` and :class:`~filelock.AsyncReadWriteLock` honor the acquire timeout without
+  busy-waiting on a leased database. Nonblocking acquires return promptly (:pr:`1059`) by :user:`gaborbernat`.
+- On Linux, :class:`~filelock.SoftFileLock`, :class:`~filelock.MarkerSoftFileLock` and :class:`~filelock.SoftFileLease`
+  use only the PID to check liveness when the holder or contender sees another PID namespace's ``/proc``. This preserves
+  live markers (:pr:`983`) by :user:`gaborbernat`.
+- On Linux, a soft lock held by a worker thread no longer admits another holder when the main thread exits inside a time
+  namespace (:pr:`1054`) by :user:`gaborbernat`.
+- On POSIX and Windows, :class:`~filelock.ReadWriteLock` opens its database through a private hard link if a
+  ``-journal``, ``-wal`` or ``-shm`` file already exists, preventing replay of a leftover journal (:pr:`976`) by
+  :user:`gaborbernat`.
+- On POSIX systems with atomic name exchange, :class:`~filelock.SoftFileLock` preserves the live holder's marker when
+  recovery encounters another account's record in a sticky directory (:pr:`975`) by :user:`gaborbernat`.
+- On POSIX systems with atomic name exchange, :class:`~filelock.SoftFileLock` waits for a live stale-lock breaker before
+  recovering its marker (:pr:`974`) by :user:`gaborbernat`.
+- On POSIX, :class:`StrictSoftFileLock <filelock.StrictSoftFileLock>` rejects another account's compatibility sentinel
+  in a sticky directory, preserving exclusion with :class:`SoftFileLock <filelock.SoftFileLock>` (:pr:`992`) by
+  :user:`gaborbernat`.
+- On POSIX, :class:`~filelock.ReadWriteLock` and :class:`~filelock.AsyncReadWriteLock` preserve mutual exclusion if
+  their private link disappears before SQLite opens it. Linux cleanup preserves peer links when procfs cannot identify
+  their PID namespace (:pr:`1096`) by :user:`gaborbernat`.
+- On POSIX, :class:`~filelock.ReadWriteLock` and :class:`~filelock.AsyncReadWriteLock` remove dead holders' empty link
+  directories after verifying the link belongs to the current database (:pr:`973`) by :user:`gaborbernat`.
+- On POSIX, :class:`~filelock.SoftFileLease` now reports a missing marker when another hard link keeps its old inode
+  alive (:pr:`1069`) by :user:`gaborbernat`.
+- On POSIX, :class:`~filelock.SoftFileLease` records claim loss detected during release in ``compromise``. Only the
+  heartbeat thread calls ``on_compromise`` (:pr:`1069`) by :user:`gaborbernat`.
+- On Windows, :class:`~filelock.ReadWriteLock` rejects junctions in its private database alias path and prevents
+  directory renames until SQLite opens the database (:pr:`1079`) by :user:`gaborbernat`.
+- On Windows, :class:`~filelock.SoftFileLock` rechecks its acquire deadline after each half-second attempt to rename a
+  stale marker held by a reader's oplock (:pr:`984`) by :user:`gaborbernat`.
+- On Windows, :class:`~filelock.StrictSoftFileLock` honors its acquire timeout when an oplock blocks the sentinel. On
+  Linux, a sentinel lease counts as contention after a short grace period, including for ``blocking=False`` (:pr:`987`)
+  by :user:`gaborbernat`.
+- On Windows, :class:`~filelock.StrictSoftFileLock` honors the acquire timeout while pinning directories, publishing
+  claims or withdrawing after a lost race. A worker finishes delayed withdrawal. Interrupted publication can leave
+  private records requiring manual removal. Release waits for Windows to close both public claims (:pr:`989`) by
+  :user:`gaborbernat`.
+- On macOS and systems with ``CLOCK_BOOTTIME``, :class:`~filelock.SoftReadWriteLock` includes system sleep when checking
+  waiter leases and renews expired tokens before entry (:pr:`1097`) by :user:`gaborbernat`.
+- Outside Windows, ``StrictSoftFileLock`` rejects a directory with unrelated entries at a protocol path and preserves
+  its permissions and contents (:pr:`978`) by :user:`gaborbernat`.
+- Under a sticky parent, :class:`~filelock.SoftReadWriteLock` rejects a ``<path>.rw`` tree, ``gen`` or ``holders``
+  writable by other accounts and rechecks subdirectory ownership on open. Remove unsafe trees so the lock can recreate
+  them privately (:pr:`988`) by :user:`gaborbernat`.
+- ``AsyncReadWriteLock`` can close after the default executor shuts down. Closing either async reader/writer lock again
+  after a canceled close waits for its worker to exit (:pr:`1110`) by :user:`gaborbernat`.
+- ``AsyncSoftReadWriteLock`` uses a private worker by default, so a blocked acquire cannot delay unrelated releases.
+  Awaiting ``close()`` joins the worker (:pr:`1073`) by :user:`gaborbernat`.
+- ``ReadWriteLock`` and ``AsyncReadWriteLock`` reject an acquire if SQLite switches to WAL mode after the header check
+  (:pr:`980`) by :user:`gaborbernat`.
+- ``ReadWriteLock`` and ``AsyncReadWriteLock`` reject unsupported SQLite file-format versions that could undermine write
+  locking (:pr:`979`) by :user:`gaborbernat`.
+- ``ReadWriteLock`` and ``AsyncReadWriteLock`` reject write locks on read-only SQLite connections (:pr:`1095`) by
+  :user:`gaborbernat`.
+- ``SoftFileLease`` and ``AsyncSoftFileLease`` reject reentrant acquisition after the heartbeat detects a lost claim.
+  Release the lost hold before acquiring again (:pr:`1098`) by :user:`gaborbernat`.
+- ``SoftReadWriteLock`` and ``AsyncSoftReadWriteLock`` limit generation scans during acquire. Release raises a protocol
+  error if it cannot withdraw the holder before its stale threshold (:pr:`981`) by :user:`gaborbernat`.
+- ``SoftReadWriteLock`` and ``AsyncSoftReadWriteLock`` preserve active readers when a delayed writer tries to reuse the
+  first generation. Acquires retry if the log resets before publication (:pr:`1074`) by :user:`gaborbernat`.
+
+.. _release-4-3-0-documentation:
+
+Documentation
+=============
+
+- A forked child closes the inherited :class:`~filelock.FileLock` descriptor. Daemons must create and acquire a new lock
+  after forking (:pr:`1053`) by :user:`gaborbernat`. (:pr:`1028`)
+- Explain how to reacquire a Windows :class:`~filelock.SoftFileLock` when marker deletion is still pending after release
+  (:pr:`1108`) by :user:`gaborbernat`. (:pr:`1086`)
+- Document how to recover a soft lock when a process reuses the PID of a dead breaker (:pr:`1094`) by
+  :user:`gaborbernat`.
+- The API reference now documents lock policy types, acquisition proxies, reader/writer settings and asyncio lock
+  contexts (:pr:`1122`) by :user:`gaborbernat`.
+
+.. _release-4-3-0-security:
+
+Security
+========
+
+- ``ReadWriteLock`` and ``AsyncReadWriteLock`` limit SQLite schema loading. Acquiring a database with a large schema can
+  raise ``ValueError`` (:pr:`1035`) by :user:`gaborbernat`.
+- :class:`~filelock.ReadWriteLock` and :class:`~filelock.AsyncReadWriteLock` limit the directory entries scanned for
+  dead holders when opening a connection (:pr:`1096`) by :user:`gaborbernat`.
+- A failed ``AsyncReadWriteLock`` construction no longer prevents a forked child from resetting other locks (:pr:`1031`)
+  by :user:`gaborbernat`.
+- Canceling an :class:`~filelock.AsyncReadWriteLock` acquire on Windows now ends its wait for a database oplock
+  (:pr:`1059`) by :user:`gaborbernat`.
+- On Unix, acquiring a lock with an ``on_acquired`` callback raises :class:`PermissionError` when the lock file has
+  another hard link and another account can write its directory. Without a callback, or in a directory only the caller
+  can write, hard-linked lock names still share the same native lock (:pr:`1118`) by :user:`radhika1314` and
+  :user:`gaborbernat`.
+- On Windows, :class:`~filelock.StrictSoftFileLock` skips abandoned private records to avoid waiting on reader oplocks.
+  For manual cleanup, see :ref:`how-to:Use fail-closed soft locks` (:pr:`1045`) by :user:`gaborbernat`.
+- On Windows, ``FileLock`` treats a pending oplock break as contention until the acquire deadline.
+  ``acquire(blocking=False)`` raises ``Timeout`` immediately (:pr:`1033`) by :user:`gaborbernat`.
+- Strict locks publish hard links without following symlinks even when the filesystem capability probe cannot run
+  (:pr:`990`) by :user:`gaborbernat`.
+
+.. _release-4-3-0-performance:
+
+Performance
+===========
+
+- :class:`~filelock.SoftReadWriteLock` reuses the generation directory handle to reduce ownership checks during write
+  acquisition and release (:pr:`1114`) by :user:`gaborbernat`.
+- Reduce the cost of reentrant acquire and release (:pr:`1116`) by :user:`gaborbernat`.
+- Speed up stale lock recovery for :class:`~filelock.SoftFileLock` in directories with many unrelated files (:pr:`1092`)
+  by :user:`gaborbernat`.
+- ``SoftReadWriteLock`` backs off for up to 10 ms when a peer publishes first during withdrawal, reducing filesystem
+  traffic (:pr:`1091`) by :user:`gaborbernat`.
+
 .. _release-4-2-12:
 
 *********************

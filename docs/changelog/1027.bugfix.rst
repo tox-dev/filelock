@@ -1,2 +1,0 @@
-Single-threaded SQLite read and write lock waits allow Python signal handlers to run. Waiting writers keep their place
-ahead of new readers.

@@ -1,1 +1,0 @@
-Explain how to reacquire a Windows :class:`~filelock.SoftFileLock` when marker deletion is still pending after release.

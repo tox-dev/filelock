@@ -1,2 +1,0 @@
-On POSIX filesystems with atomic exchange, :class:`~filelock.SoftFileLock` restores a live marker after an interrupted
-exchange and removes its own unfinished marker during cleanup.

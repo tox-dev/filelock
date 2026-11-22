@@ -1,2 +1,0 @@
-``SoftReadWriteLock`` recreates a missing generation directory during read or write acquisition, even if a holder
-record survives.

@@ -1,4 +1,0 @@
-On POSIX, :class:`~filelock.ReadWriteLock` and :class:`~filelock.AsyncReadWriteLock` raise :class:`RuntimeError` in
-detected subinterpreters, including ``InterpreterPoolExecutor`` workers and mod_wsgi or uWSGI subinterpreters. Use the
-main interpreter or a separate process. Detection on embedded CPython 3.11 requires ``_xxsubinterpreters`` or
-``ctypes`` access to the interpreter C API.

@@ -1,2 +1,0 @@
-``ReadWriteLock`` and ``AsyncReadWriteLock`` limit SQLite schema loading. Acquiring a database with a large schema can
-raise ``ValueError``.

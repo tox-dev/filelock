@@ -1,1 +1,0 @@
-``ReadWriteLock`` raises ``RuntimeError`` if a directory change redirects a singleton's cached database path.

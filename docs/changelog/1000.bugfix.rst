@@ -1,2 +1,0 @@
-Unix locks select the soft fallback per resolved path, including after a directory change. The lock keeps its Unix
-type and supports ``pid``, ``is_lock_held_by_us``, ``break_lock()`` and ``lifetime`` during fallback.
