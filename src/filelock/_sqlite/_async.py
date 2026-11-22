@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-from filelock._async_lock import AsyncReadWriteBase
+from filelock._async_lock import AsyncReadWriteBase, AsyncReadWriteProxy
 from filelock._core import (
     append_exception_context,
     ensure_current_process,
@@ -25,7 +25,6 @@ if TYPE_CHECKING:
     import asyncio
     from collections.abc import AsyncGenerator
     from concurrent import futures
-    from types import TracebackType
     from typing import Literal
 
 
@@ -177,7 +176,7 @@ class AsyncReadWriteLock(AsyncReadWriteBase[ReadWriteLock]):
         self._forget_inherited_workers()
 
 
-class AsyncAcquireReadWriteReturnProxy:
+class AsyncAcquireReadWriteReturnProxy(AsyncReadWriteProxy[AsyncReadWriteLock]):
     """
     Context-aware object that releases the async read/write lock on exit.
 
@@ -185,18 +184,11 @@ class AsyncAcquireReadWriteReturnProxy:
     """
 
     def __init__(self, lock: AsyncReadWriteLock) -> None:
-        self.lock = lock
+        super().__init__(lock)
 
+    @override
     async def __aenter__(self) -> AsyncReadWriteLock:
         return self.lock
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self.lock.release()
 
 
 __all__ = [
