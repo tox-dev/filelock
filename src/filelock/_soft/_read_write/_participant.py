@@ -1,3 +1,5 @@
+"""Reader and writer participation in the generation log."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast

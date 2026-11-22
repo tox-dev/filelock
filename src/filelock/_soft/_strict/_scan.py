@@ -1,3 +1,5 @@
+"""Directory scans and validation of published strict soft-lock claims."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast

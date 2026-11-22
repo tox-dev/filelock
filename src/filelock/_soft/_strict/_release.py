@@ -1,3 +1,5 @@
+"""Strict soft-lock release and pending cleanup after a release deadline."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["functools", "inspect", "threading"]

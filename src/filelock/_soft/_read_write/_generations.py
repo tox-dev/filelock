@@ -1,3 +1,5 @@
+"""Immutable snapshots and commits in the reader/writer generation log."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast

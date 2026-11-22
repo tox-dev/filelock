@@ -1,3 +1,5 @@
+"""Windows directory pins and access checks for private lock directories."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["struct"]

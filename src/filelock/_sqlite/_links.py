@@ -1,3 +1,5 @@
+"""Private hard links for SQLite lock databases and cleanup of abandoned links."""
+
 from __future__ import annotations
 
 __lazy_modules__ = [

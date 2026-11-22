@@ -1,3 +1,5 @@
+"""Owner inspection and stale-owner checks for marker locks."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["contextlib", "filelock._filesystem", "filelock._identity", "filelock._soft"]

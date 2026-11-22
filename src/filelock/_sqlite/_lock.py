@@ -1,3 +1,5 @@
+"""Synchronous reader/writer locking with SQLite transactions."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["sqlite3"]

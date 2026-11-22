@@ -1,3 +1,5 @@
+"""Async lock release during context exit, cancellation and shutdown."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast

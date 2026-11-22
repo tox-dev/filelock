@@ -1,3 +1,5 @@
+"""Lock state and descriptor ownership across a process fork."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

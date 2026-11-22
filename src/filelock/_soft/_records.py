@@ -1,3 +1,5 @@
+"""Owner record formats for soft lock markers."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["contextlib", "filelock._filesystem", "math"]

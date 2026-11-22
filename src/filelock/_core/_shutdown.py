@@ -1,3 +1,5 @@
+"""Lock cleanup during garbage collection and interpreter shutdown."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["types"]

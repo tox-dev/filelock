@@ -1,3 +1,5 @@
+"""Publication and deletion of strict soft-lock claims on Windows."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["contextlib", "filelock._core", "filelock._filesystem", "msvcrt"]

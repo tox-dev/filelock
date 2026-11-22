@@ -1,3 +1,5 @@
+"""Recovery of stale or displaced lock markers."""
+
 from __future__ import annotations
 
 __lazy_modules__ = [

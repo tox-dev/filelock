@@ -1,3 +1,5 @@
+"""Hostnames for lock records and diagnostic messages."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["contextlib", "hashlib", "pathlib", "socket", "typing"]

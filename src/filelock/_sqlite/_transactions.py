@@ -1,3 +1,5 @@
+"""SQLite read and write transactions with lock acquisition deadlines."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

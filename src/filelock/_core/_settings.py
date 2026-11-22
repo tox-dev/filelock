@@ -1,3 +1,5 @@
+"""Lock options, defaults and argument validation."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["decimal", "inspect", "math", "numbers", "threading", "warnings", "weakref"]

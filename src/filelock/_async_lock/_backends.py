@@ -1,3 +1,5 @@
+"""Async adapters for native, soft and reader/writer locks."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

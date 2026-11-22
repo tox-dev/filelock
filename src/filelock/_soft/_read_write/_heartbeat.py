@@ -1,3 +1,5 @@
+"""Heartbeat timing and renewal for reader/writer leases."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["math"]

@@ -1,3 +1,5 @@
+"""Process identity and liveness checks for recorded lock owners."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

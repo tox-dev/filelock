@@ -1,3 +1,5 @@
+"""File and directory operations shared by lock backends."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["pathlib"]

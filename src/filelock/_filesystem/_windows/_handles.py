@@ -1,3 +1,5 @@
+"""Windows handle operations for opening, identifying, renaming and deleting lock files."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["msvcrt", "typing"]

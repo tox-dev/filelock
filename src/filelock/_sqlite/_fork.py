@@ -1,3 +1,5 @@
+"""SQLite lock safeguards for forked processes and subinterpreters."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["_thread", "importlib", "pathlib"]

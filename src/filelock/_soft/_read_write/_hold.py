@@ -1,3 +1,5 @@
+"""Ownership and loss tracking for reader and writer holds."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast

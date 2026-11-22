@@ -1,3 +1,5 @@
+"""Unix file locking with flock and an optional soft-lock fallback."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["filelock._filesystem", "pathlib", "secrets", "warnings"]

@@ -1,3 +1,5 @@
+"""Lock instance reuse by path and constructor options."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

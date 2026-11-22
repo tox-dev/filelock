@@ -1,3 +1,5 @@
+"""Windows file operations that bound or avoid waits on opportunistic locks."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["msvcrt", "threading"]

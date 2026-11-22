@@ -1,3 +1,5 @@
+"""Atomic name exchange for removing or breaking lock files."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast

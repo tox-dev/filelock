@@ -1,3 +1,5 @@
+"""Per-instance and thread-local state for lock operations."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["inspect", "operator", "warnings"]

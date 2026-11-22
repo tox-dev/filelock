@@ -1,3 +1,5 @@
+"""Synchronous lock release and context manager exit."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

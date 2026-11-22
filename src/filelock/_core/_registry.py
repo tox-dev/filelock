@@ -1,3 +1,5 @@
+"""Canonical path keys and per-thread lock counts."""
+
 from __future__ import annotations
 
 import os

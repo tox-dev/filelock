@@ -1,3 +1,5 @@
+"""Synchronous lock acquisition, retries and rollback."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

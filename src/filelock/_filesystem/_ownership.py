@@ -1,3 +1,5 @@
+"""File ownership checks across user namespaces."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["pathlib", "platform"]

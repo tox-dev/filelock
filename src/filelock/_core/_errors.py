@@ -1,3 +1,5 @@
+"""Lock exceptions and rules for reporting concurrent cleanup errors."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final, NoReturn, TypeGuard, TypeVar

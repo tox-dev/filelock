@@ -1,3 +1,5 @@
+"""Acquisition deadlines and rollback for canceled async lock attempts."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast

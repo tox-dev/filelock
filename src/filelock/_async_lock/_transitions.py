@@ -1,3 +1,5 @@
+"""Queue for serializing acquisition and release across event loops."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["asyncio", "collections", "concurrent.futures", "threading"]

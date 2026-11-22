@@ -1,3 +1,5 @@
+"""Names and record formats for strict soft-lock claims."""
+
 from __future__ import annotations
 
 __lazy_modules__ = ["filelock._core", "filelock._identity", "secrets"]

@@ -1,3 +1,5 @@
+"""Atomic publication and removal of strict soft-lock claim records."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast

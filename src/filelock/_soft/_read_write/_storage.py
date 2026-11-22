@@ -1,3 +1,5 @@
+"""Filesystem access and holder record encoding for the generation log."""
+
 from __future__ import annotations
 
 __lazy_modules__ = [
