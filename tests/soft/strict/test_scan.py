@@ -5,16 +5,18 @@ import os
 import stat
 import sys
 import time
-from errno import EACCES, EIO
+from errno import EACCES, EIO, ESTALE
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from filelock import SoftFileLockProtocolError, StrictSoftFileLock
+from filelock import SoftFileLockProtocolError, StrictSoftFileLock, Timeout
+from filelock._soft._strict._scan import scandir_relative
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from contextlib import AbstractContextManager
 
     from pytest_mock import MockerFixture
 from .capability_marks import WINDOWS_ONLY
@@ -28,6 +30,35 @@ from .filesystem_faults import (
 )
 
 pytestmark: Final[pytest.MarkDecorator] = pytest.mark.requires_hard_links
+
+
+@pytest.mark.parametrize(
+    "published", [pytest.param(0, id="preflight"), pytest.param(1, id="intent"), pytest.param(2, id="held")]
+)
+def test_stale_claim_directory_withdraws_before_retry(
+    initialized_lock_path: Path, mocker: MockerFixture, published: int
+) -> None:
+    def stale_scan(directory_ref: tuple[str, int | None]) -> AbstractContextManager[Iterator[os.DirEntry[str]]]:
+        if len(list(Path(directory_ref[0]).glob("*.claim"))) == published:
+            raise OSError(ESTALE, "Stale file handle")
+        return scandir_relative(directory_ref)
+
+    scan = mocker.patch("filelock._soft._strict._scan.scandir_relative", autospec=True, side_effect=stale_scan)
+    lock = StrictSoftFileLock(initialized_lock_path)
+    with pytest.raises(Timeout):
+        lock.acquire(timeout=0)
+    mocker.stop(scan)
+    assert lock.claims == ()
+    with lock.acquire(timeout=0):
+        assert lock.is_locked
+
+
+def test_claim_inspection_reports_a_stale_directory(initialized_lock_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch(
+        "filelock._soft._strict._scan.scandir_relative", autospec=True, side_effect=OSError(ESTALE, "Stale file handle")
+    )
+    with pytest.raises(SoftFileLockProtocolError, match="cannot list claim directory"):
+        _ = StrictSoftFileLock(initialized_lock_path).claims
 
 
 def test_strict_soft_denied_claim_removed_during_grace_is_skipped(tmp_path: Path, mocker: MockerFixture) -> None:

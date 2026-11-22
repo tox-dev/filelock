@@ -127,6 +127,8 @@ def _list_claim_names(lock_file: str, directory_ref: tuple[str, int | None], *, 
         with scandir_relative(directory_ref) as entries:
             return _public_claim_names(lock_file, directory_ref, entries, entry_limit=entry_limit)
     except OSError as error:
+        if error.errno == ESTALE and entry_limit is not None:
+            raise RetryDoorwayError from error
         reason = f"cannot list claim directory: {error.strerror or type(error).__name__}"
         raise SoftFileLockProtocolError(lock_file, None, reason) from error
 
