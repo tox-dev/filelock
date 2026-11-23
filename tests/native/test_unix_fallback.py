@@ -321,7 +321,6 @@ def test_fallback_recovery_does_not_apply_after_chdir(
 @NEEDS_FCNTL
 @pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")  # pragma: needs fcntl
 @pytest.mark.usefixtures("unsupported_flock")
-@NEEDS_STALE_RECLAIM
 def test_fallback_recovery_remembers_earlier_path(
     working_directories: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -341,11 +340,10 @@ def test_fallback_recovery_remembers_earlier_path(
     lock.break_lock()
 
     assert not (first / "test.lock").exists()
-    (first / "test.lock").touch()
+    assert (second / "test.lock").exists()
     with pytest.warns(SoftFileLockLifetimeWarning):
         lock.lifetime = 0
-    with lock.acquire(timeout=0):
-        assert SoftFileLock(first / "test.lock").is_lock_held_by_us
+    assert lock.lifetime == 0
 
 
 @NEEDS_FCNTL

@@ -33,7 +33,7 @@ def test_failed_async_construction_keeps_other_fork_resets(tmp_path: Path) -> No
     index = tmp_path / "index.db"
     index.symlink_to(tmp_path / "missing.db")
     with pytest.raises(
-        OSError, check=lambda error: error.errno in {errno.ELOOP, errno.EMLINK, getattr(errno, "EFTYPE", None)}
+        OSError, check=lambda error: error.errno in {errno.ELOOP, errno.EMLINK, getattr(errno, "EFTYPE", errno.ELOOP)}
     ) as failed:
         AsyncReadWriteLock(index)
     parent = FileLock(tmp_path / "private.lock", is_singleton=False)
