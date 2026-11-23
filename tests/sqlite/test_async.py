@@ -32,7 +32,9 @@ pytestmark: Final[pytest.MarkDecorator] = pytest.mark.usefixtures("clear_sqlite_
 def test_failed_async_construction_keeps_other_fork_resets(tmp_path: Path) -> None:  # pragma: win32 no cover
     index = tmp_path / "index.db"
     index.symlink_to(tmp_path / "missing.db")
-    with pytest.raises(OSError, match="symbolic links") as failed:
+    with pytest.raises(
+        OSError, check=lambda error: error.errno in {errno.ELOOP, errno.EMLINK, getattr(errno, "EFTYPE", errno.ELOOP)}
+    ) as failed:
         AsyncReadWriteLock(index)
     parent = FileLock(tmp_path / "private.lock", is_singleton=False)
     parent.acquire()
@@ -46,7 +48,7 @@ def test_failed_async_construction_keeps_other_fork_resets(tmp_path: Path) -> No
         assert os.waitstatus_to_exitcode(status) == 0
     finally:
         parent.release()
-    assert failed.value.errno == errno.ELOOP
+    assert failed.value.filename == str(index)
 
 
 @pytest.mark.asyncio

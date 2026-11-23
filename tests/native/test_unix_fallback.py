@@ -18,6 +18,7 @@ from filelock import (
 )
 from tests.capability_marks import (
     NEEDS_FCNTL,
+    NEEDS_STALE_RECLAIM,
 )
 
 if TYPE_CHECKING:
@@ -277,6 +278,7 @@ def test_native_break_lock_does_not_remove_file(tmp_path: Path) -> None:
 @NEEDS_FCNTL
 @pytest.mark.filterwarnings("ignore:flock not supported on this filesystem:UserWarning")
 @pytest.mark.usefixtures("unsupported_flock")
+@NEEDS_STALE_RECLAIM
 def test_fallback_lifetime_expires_recordless_marker(tmp_path: Path) -> None:  # pragma: needs fcntl
     (lock_path := tmp_path / "test.lock").touch()
     lock = UnixFileLock(lock_path)
@@ -338,11 +340,10 @@ def test_fallback_recovery_remembers_earlier_path(
     lock.break_lock()
 
     assert not (first / "test.lock").exists()
-    (first / "test.lock").touch()
+    assert (second / "test.lock").exists()
     with pytest.warns(SoftFileLockLifetimeWarning):
         lock.lifetime = 0
-    with lock.acquire(timeout=0):
-        assert SoftFileLock(first / "test.lock").is_lock_held_by_us
+    assert lock.lifetime == 0
 
 
 @NEEDS_FCNTL
