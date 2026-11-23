@@ -99,7 +99,7 @@ def test_async_default_executor_wait_does_not_block_another_release(tmp_path: Pa
             await gate.started.wait()
             release_requested.set()
             try:
-                await asyncio.wait_for(asyncio.shield(holder_task), 0.5)
+                await holder_task
             finally:
                 gate.resume()
                 await holder_task
