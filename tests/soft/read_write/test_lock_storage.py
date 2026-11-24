@@ -130,6 +130,7 @@ def test_protocol_tree_stays_in_place_while_a_record_is_written(  # pragma: win3
 
 
 @NEEDS_USER_NAMESPACES  # pragma: win32 no cover  # pragma: darwin no cover
+@pytest.mark.skipif(not CAPABILITIES["link-dir-fd"], reason="checking the mount ID needs descriptor-based storage")
 def test_write_lock_with_mapped_overflow_uid(sticky_dir_with_mapped_owner: Path) -> None:
     path = sticky_dir_with_mapped_owner / "marker"
     with (
