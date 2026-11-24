@@ -125,21 +125,9 @@ def test_read_write_lock_refuses_large_application_schema(
         f",UNIQUE({first},{second})"
         for first, second in itertools.islice(itertools.permutations(columns, 2), unique_per_row)
     )
+    column_spec = f"{','.join(columns)}{constraints}".ljust(row_length)
     with closing(sqlite3.connect(database)) as connection:
-        connection.execute("CREATE TABLE application (value)")
-        connection.execute("PRAGMA writable_schema=ON")
-        connection.executemany(
-            "INSERT INTO sqlite_master VALUES('table', ?, ?, 2, ?)",
-            (
-                (
-                    f"t{number}",
-                    f"t{number}",
-                    f"CREATE TABLE t{number}({','.join(columns)}{constraints})".ljust(row_length),
-                )
-                for number in range(rows)
-            ),
-        )
-        connection.commit()
+        connection.executescript(";\n".join(f"CREATE TABLE t{number}({column_spec})" for number in range(rows)))
 
     with pytest.raises(ValueError, match="schema"):
         ReadWriteLock(database, is_singleton=False).acquire_read(timeout=1)

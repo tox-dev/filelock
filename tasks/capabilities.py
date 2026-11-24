@@ -288,6 +288,13 @@ def _reports_object_tracebacks() -> bool:
     return True
 
 
+def _traces_allocations() -> bool:
+    try:
+        return hasattr(import_module("tracemalloc"), "start")
+    except ImportError:
+        return False
+
+
 def _supports_file_mode() -> bool:
     with _unreadable_file() as probe:
         return probe.stat().st_mode & 0o777 == 0
@@ -401,6 +408,7 @@ CAPABILITIES: Final[dict[str, bool]] = {
     and find_spec("_interpreters" if sys.version_info >= (3, 13) else "_xxsubinterpreters") is not None,
     "posix-hard-link": sys.platform != "win32" and _LINK_FOLLOW_SYMLINKS,
     "sqlite-private-link": sys.platform == "win32" or _LINK_FOLLOW_SYMLINKS,
+    "tracemalloc-allocations": _traces_allocations(),
     "tracemalloc-object-traceback": _reports_object_tracebacks(),
     "gc-objects": hasattr(gc, "get_objects"),
     # Only the tox env that installs a released filelock sets this.

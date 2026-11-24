@@ -12,10 +12,14 @@ __lazy_modules__ = ["pathlib", f"{__spec__.parent}._host"]
 import os
 import sys
 from errno import EPERM, ESRCH
+from functools import cache
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from ._host import NAMESPACE_MARK, host_name
+
+if TYPE_CHECKING:
+    import ctypes
 
 
 def owner_is_stale(pid: int, hostname: str, start_token: int | None) -> bool:
@@ -243,10 +247,8 @@ else:  # pragma: win32 no cover
             )
 
     elif sys.platform == "darwin":  # pragma: darwin cover
-        import ctypes
         import struct
 
-        _LIBC: Final[ctypes.CDLL] = ctypes.CDLL(None, use_errno=True)
         _CTL_KERN: Final[int] = 1
         _KERN_PROC: Final[int] = 14
         _KERN_PROC_PID: Final[int] = 1
@@ -255,13 +257,16 @@ else:  # pragma: win32 no cover
         _TIMEVAL_SIZE: Final[int] = struct.calcsize(_TIMEVAL_AT_ZERO)
 
         def process_start_token(pid: int) -> int | None:
+            import ctypes  # ruff:ignore[import-outside-top-level]  # _ctypes may reject subinterpreter imports
+
             mib = (ctypes.c_int * 4)(_CTL_KERN, _KERN_PROC, _KERN_PROC_PID, pid)
             length = ctypes.c_size_t(0)
+            sysctl = _macos_libc().sysctl
             # A dead PID can pass the size probe and return zero bytes on the second call.
-            if _LIBC.sysctl(mib, 4, None, ctypes.byref(length), None, 0) != 0:
+            if sysctl(mib, 4, None, ctypes.byref(length), None, 0) != 0:
                 return None
             buffer = (ctypes.c_char * length.value)()
-            if _LIBC.sysctl(mib, 4, buffer, ctypes.byref(length), None, 0) != 0 or length.value < _TIMEVAL_SIZE:
+            if sysctl(mib, 4, buffer, ctypes.byref(length), None, 0) != 0 or length.value < _TIMEVAL_SIZE:
                 return None
             seconds, microseconds = struct.unpack_from(_TIMEVAL_AT_ZERO, buffer.raw, 0)
             return seconds * 1_000_000 + microseconds
@@ -271,6 +276,13 @@ else:  # pragma: win32 no cover
         def process_start_token(pid: int) -> int | None:
             del pid
             return None
+
+
+@cache
+def _macos_libc() -> ctypes.CDLL:  # pragma: darwin cover
+    import ctypes  # ruff:ignore[import-outside-top-level]  # the library is needed only for PID lookups
+
+    return ctypes.CDLL(None, use_errno=True)
 
 
 if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma: android no cover

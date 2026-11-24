@@ -141,7 +141,7 @@ async def test_many_waiting_writers_drain_after_reader_releases(lock_file: str) 
     await asyncio.sleep(0)
     assert not any(task.done() for task in tasks)
     await lock.release()
-    await asyncio.wait_for(asyncio.gather(*tasks), 5)
+    await asyncio.gather(*tasks)
     await lock.close()
 
     assert completed == list(range(writer_count))

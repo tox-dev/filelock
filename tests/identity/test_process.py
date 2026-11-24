@@ -195,7 +195,12 @@ def test_process_start_token_read_only_from_a_proc_of_this_pid_namespace(
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS sysctl probe")
 def test_darwin_sysctl_probe_failure_reads_no_token(mocker: MockerFixture) -> None:  # pragma: darwin cover
-    mocker.patch("filelock._identity._process._LIBC.sysctl", return_value=-1, autospec=True)
+    mocker.patch.object(
+        filelock._identity._process._macos_libc(),
+        "sysctl",
+        return_value=-1,
+        autospec=True,
+    )
     assert process_start_token(os.getpid()) is None
 
 

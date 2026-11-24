@@ -52,7 +52,7 @@ inside.wait()
     assert (result.returncode, result.stderr) == (0, "")
 
 
-@NEEDS_REGISTER_AT_FORK  # pragma: needs register-at-fork
+@NEEDS_FORK  # pragma: needs fork
 def test_child_forked_by_a_daemon_thread_at_exit_keeps_its_fork_bookkeeping(tmp_path: Path) -> None:
     # Children forked by a daemon during atexit still need descriptor tracking.
     script: Final[str] = """

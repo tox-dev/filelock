@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
+from capabilities import CAPABILITIES
 
 from filelock import SoftFileLockProtocolError
 from filelock._soft._read_write import _generations as protocol_mod
@@ -40,8 +41,8 @@ def test_ledger_measures_how_long_a_value_stays_unchanged() -> None:
     assert ledger.observe("a", None, asked=clock[0]) == pytest.approx(0.0)
 
 
+@pytest.mark.skipif(not CAPABILITIES["tracemalloc-allocations"], reason="requires allocation tracing")
 def test_ledger_keeps_large_observations_with_bounded_memory() -> None:
-    pytest.importorskip("tracemalloc")
     script = (
         "import tracemalloc\n"
         "from filelock._soft._read_write._sweep import Ledger\n"
