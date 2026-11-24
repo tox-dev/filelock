@@ -271,17 +271,18 @@ else:  # pragma: win32 no cover
             seconds, microseconds = struct.unpack_from(_TIMEVAL_AT_ZERO, buffer.raw, 0)
             return seconds * 1_000_000 + microseconds
 
-        @cache
-        def _macos_libc() -> ctypes.CDLL:
-            import ctypes  # ruff:ignore[import-outside-top-level]  # the library is needed only for PID lookups
-
-            return ctypes.CDLL(None, use_errno=True)
-
     else:  # pragma: no cover  # a POSIX platform without a proven start-time source falls back to fail-closed liveness
 
         def process_start_token(pid: int) -> int | None:
             del pid
             return None
+
+
+@cache
+def _macos_libc() -> ctypes.CDLL:  # pragma: darwin cover
+    import ctypes  # ruff:ignore[import-outside-top-level]  # the library is needed only for PID lookups
+
+    return ctypes.CDLL(None, use_errno=True)
 
 
 if sys.platform not in {"linux", "android"}:  # pragma: linux no cover  # pragma: android no cover
