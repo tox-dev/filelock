@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, suppress
 from itertools import count
 from multiprocessing import Event, Process
@@ -19,9 +20,20 @@ from tests.capability_marks import (
 )
 from tests.process_helpers import cleanup_processes
 
-from .lock_helpers import PROCESS_DEADLINE, holders, make_lock, plant_holder, read_state, wait_until, worker
+from .lock_helpers import (
+    PROCESS_DEADLINE,
+    holders,
+    make_lock,
+    plant_holder,
+    read_state,
+    wait_until,
+    worker,
+    writer_gets_in,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pytest_mock import MockerFixture
 
 pytestmark: Final[list[pytest.MarkDecorator]] = [
@@ -207,6 +219,43 @@ def test_two_readers_in_same_process_share_slot(lock_file: str) -> None:
         assert sorted(arrivals) == list(range(8))
     finally:
         lock.close()
+
+
+def test_reader_waiting_for_transaction_joins_the_new_hold(
+    lock_file: str, lock: SoftReadWriteLock, mocker: MockerFixture
+) -> None:
+    waiting, peer_has_hold = threading.Event(), threading.Event()
+    acquire = sync_mod.acquire_thread_lock
+
+    def pause_first(
+        transaction: threading.Lock,
+        *,
+        blocking: bool,
+        timeout: float,
+        poll_interval: float,
+        cancel_check: Callable[[], bool] | None,
+    ) -> bool:
+        if not waiting.is_set():
+            waiting.set()
+            assert peer_has_hold.wait(PROCESS_DEADLINE)
+        return acquire(
+            transaction, blocking=blocking, timeout=timeout, poll_interval=poll_interval, cancel_check=cancel_check
+        )
+
+    mocker.patch.object(sync_mod, "acquire_thread_lock", autospec=True, side_effect=pause_first)
+    with ThreadPoolExecutor(max_workers=1) as reader:
+        try:
+            pending = reader.submit(lock.acquire_read, PROCESS_DEADLINE)
+            assert waiting.wait(PROCESS_DEADLINE)
+            with lock.read_lock(timeout=PROCESS_DEADLINE):
+                peer_has_hold.set()
+                pending.result(PROCESS_DEADLINE)
+                assert len(read_state(lock_file).readers) == 1
+                reader.submit(lock.release).result(PROCESS_DEADLINE)
+                assert not writer_gets_in(lock_file)
+        finally:
+            peer_has_hold.set()
+    assert writer_gets_in(lock_file)
 
 
 @SKIP_ON_UNRELIABLE_PROCESS_SYNC
