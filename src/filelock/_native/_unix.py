@@ -10,7 +10,7 @@ import stat
 import sys
 import warnings
 from contextlib import contextmanager, suppress
-from errno import EACCES, EAGAIN, ENOSYS, EWOULDBLOCK
+from errno import EACCES, EAGAIN, EBUSY, EIO, ENOSYS, EWOULDBLOCK
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 
@@ -254,13 +254,21 @@ else:  # pragma: win32 no cover
                 if fd is not None:
                     return _flock_is_missing(fd)
             name = directory / f".filelock-probe-{secrets.token_hex(16)}"
+            deferred_stat: os.stat_result | None = None
             try:
                 fd = self._open_probe(opened, str(name), os.O_RDWR | os.O_CREAT | os.O_EXCL)
-                self._unlink_probe(name, opened)
+                deferred_stat = self._unlink_probe(name, opened)
+                return None if fd is None else _flock_is_missing(fd)
             except BaseException:
-                self._unlink_probe(name, opened)
+                if opened and deferred_stat is None:
+                    deferred_stat = self._unlink_probe(name, opened)
                 raise
-            return None if fd is None else _flock_is_missing(fd)
+            finally:
+                if deferred_stat is not None:
+                    try:
+                        self._close_probe(opened)
+                    finally:
+                        self._unlink_closed_probe(name, deferred_stat)
 
         @staticmethod
         def _open_probe(opened: list[int], path: str, flags: int) -> int | None:
@@ -272,11 +280,26 @@ else:  # pragma: win32 no cover
                 return None
 
         @staticmethod
-        def _unlink_probe(name: Path, opened: list[int]) -> None:
-            if opened:
-                with suppress(FileNotFoundError):
-                    if os.path.samestat(name.lstat(), os.fstat(opened[0])):
-                        name.unlink()
+        def _unlink_probe(name: Path, opened: list[int]) -> os.stat_result | None:
+            if not opened:
+                return None
+            with suppress(FileNotFoundError):
+                probe_stat = os.fstat(opened[0])
+                if not os.path.samestat(name.lstat(), probe_stat):
+                    return None
+                try:
+                    name.unlink()
+                except OSError as exception:
+                    if exception.errno in {EIO, EBUSY}:
+                        return probe_stat
+                    raise
+            return None
+
+        @staticmethod
+        def _unlink_closed_probe(name: Path, probe_stat: os.stat_result) -> None:
+            with suppress(FileNotFoundError):
+                if os.path.samestat(name.lstat(), probe_stat):
+                    name.unlink()
 
         @staticmethod
         def _close_probe(opened: list[int]) -> None:
