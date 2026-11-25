@@ -1,1 +1,1 @@
-Reject non-boolean values for boolean constructor options such as ``is_singleton``, ``thread_local``, ``fallback_to_soft``, ``preserve_lock_file`` and ``run_in_executor`` instead of silently changing lock behaviour.
+Reject non-boolean values for boolean constructor options such as ``is_singleton``, ``thread_local``, ``fallback_to_soft``, ``preserve_lock_file`` and ``run_in_executor`` instead of silently changing lock behavior.
