@@ -17,6 +17,7 @@ from filelock._core import (
     ForkResettable,
     canonical,
     check_blocking,
+    check_bool,
     ensure_current_process,
     override,
     resolve_lazy_imports_before_shutdown,
@@ -82,6 +83,7 @@ class ReadWriteLockMeta(type):
     ) -> ReadWriteLock:
         cls._prepare_interpreter()
         check_blocking(blocking)
+        check_bool("is_singleton", is_singleton)
         timeout = seconds("timeout", timeout)
         if cls._instances_pid != GETPID():
             cls._reset_class_after_fork()

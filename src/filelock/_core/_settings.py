@@ -229,6 +229,12 @@ def check_blocking(blocking: bool) -> None:  # ruff:ignore[boolean-type-hint-pos
         raise TypeError(msg)
 
 
+def check_bool(name: str, value: bool) -> None:  # ruff:ignore[boolean-type-hint-positional-argument]  # validates the option's own value
+    if not isinstance(value, bool):
+        msg = f"{name} must be a bool, not {type(value).__name__}"
+        raise TypeError(msg)
+
+
 def resolve_timeout(timeout: float, *, blocking: bool) -> float:
     if math.isnan(timeout := seconds("timeout", timeout)) and blocking:
         msg = "timeout must be a number of seconds, not nan"
@@ -318,6 +324,7 @@ __all__ = [
     "SoftFileLockLifetimeWarning",
     "acquire_thread_lock",
     "check_blocking",
+    "check_bool",
     "check_mode",
     "check_timeout_max",
     "override",

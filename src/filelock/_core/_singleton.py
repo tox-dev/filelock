@@ -30,6 +30,7 @@ from ._settings import (
     LockInitValue,
     LockOptions,
     check_blocking,
+    check_bool,
     check_mode,
     override,
     resolve_close_error_policy,
@@ -84,6 +85,10 @@ class FileLockMeta(ABCMeta):
         lifetime = resolve_lifetime(lifetime, cls, stacklevel=cls._constructor_lifetime_warning_stacklevel)
         poll_interval = resolve_poll_interval(poll_interval)
         check_blocking(blocking)
+        check_bool("thread_local", thread_local)
+        check_bool("is_singleton", is_singleton)
+        check_bool("fallback_to_soft", fallback_to_soft)
+        check_bool("preserve_lock_file", preserve_lock_file)
         timeout = seconds("timeout", timeout)
         check_mode(mode, cls.__name__)
         options = LockOptions(

@@ -28,6 +28,7 @@ from filelock._core import (
     ThreadLocalFileContext,
     Timeout,
     check_blocking,
+    check_bool,
     delegate_to_current,
     override,
     register_fork_object,
@@ -75,6 +76,7 @@ class AsyncFileLockMeta(FileLockMeta):
         executor: futures.Executor | None = None,
         **kwargs: ExtraValue,
     ) -> _AT:
+        check_bool("run_in_executor", run_in_executor)
         if thread_local and run_in_executor:
             msg = "run_in_executor is not supported when thread_local is True"
             raise ValueError(msg)

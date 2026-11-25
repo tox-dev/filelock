@@ -43,6 +43,7 @@ from filelock._core import (
     acquire_thread_lock,
     canonical,
     check_blocking,
+    check_bool,
     ensure_current_process,
     override,
     path_key,
@@ -88,6 +89,7 @@ class _SoftRWMeta(type):
     ) -> SoftReadWriteLock:
         ensure_current_process()
         check_blocking(blocking)
+        check_bool("is_singleton", is_singleton)
         timeout = seconds("timeout", timeout)
         # Older subclasses may omit on_compromise from their constructors.
         create = partial(
