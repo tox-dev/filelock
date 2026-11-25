@@ -160,11 +160,11 @@ def check_timeout_max(name: str, value: float) -> None:
 
 
 def check_mode(mode: int, cls_name: str) -> None:
-    if mode == UNSET_FILE_MODE:
-        return
     if isinstance(mode, bool) or not isinstance(mode, int):
         msg = f"mode must be an int, not {type(mode).__name__}"
         raise TypeError(msg)
+    if mode == UNSET_FILE_MODE:
+        return
     if not 0 <= mode <= (stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO):
         msg = f"mode={mode:#o} must be within 0o000-0o777 for {cls_name}"
         raise ValueError(msg)

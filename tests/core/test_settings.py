@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import sys
+from decimal import Decimal
+from fractions import Fraction
 from stat import filemode
 from typing import TYPE_CHECKING
 
@@ -212,7 +214,16 @@ def test_mode_outside_permission_bits_raises(lock_type: type[BaseFileLock], mode
         lock_type(tmp_path / "a.lock", mode=mode)
 
 
-@pytest.mark.parametrize("mode", [pytest.param("0o644", id="str"), pytest.param(True, id="bool")])
-def test_mode_of_wrong_type_raises(mode: str | bool, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param("0o644", id="str"),
+        pytest.param(True, id="bool"),
+        pytest.param(-1.0, id="sentinel-equal-float"),
+        pytest.param(Decimal(-1), id="sentinel-equal-decimal"),
+        pytest.param(Fraction(-1, 1), id="sentinel-equal-fraction"),
+    ],
+)
+def test_mode_of_wrong_type_raises(mode: str | bool | float | Decimal | Fraction, tmp_path: Path) -> None:
     with pytest.raises(TypeError, match="mode must be an int"):
         FileLock(tmp_path / "a.lock", mode=mode)  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
