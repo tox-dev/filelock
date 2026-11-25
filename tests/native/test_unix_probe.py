@@ -407,14 +407,7 @@ def test_probe_defers_unlink_on_eio_when_interrupted(
 @NEEDS_FCNTL
 def test_probe_unlink_propagates_non_eio_error(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: needs fcntl
     mocker.patch.object(os, "O_TMPFILE", 0, create=True)
-    real_unlink = Path.unlink
-
-    def deny_probe_unlink(self: Path, *, missing_ok: bool = False) -> None:
-        if self.name.startswith(".filelock-probe-") and self.parent == tmp_path:
-            raise PermissionError(EACCES, "unlink denied", str(self))
-        real_unlink(self, missing_ok=missing_ok)
-
-    mocker.patch.object(Path, "unlink", autospec=True, side_effect=deny_probe_unlink)
+    mocker.patch.object(Path, "unlink", autospec=True, side_effect=PermissionError(EACCES, "unlink denied"))
     with pytest.raises(PermissionError, match="unlink denied"):
         UnixFileLock(tmp_path / "test.lock", mode=0o664).acquire(timeout=0)
 

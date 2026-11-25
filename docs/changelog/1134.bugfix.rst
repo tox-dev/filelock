@@ -1,0 +1,1 @@
+Defer unlinking the Unix flock probe file until its descriptor is closed when unlinking an open file fails with ``EIO`` (such as on Azure BlobFuse2).
