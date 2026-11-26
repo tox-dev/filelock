@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-_NON_BOOL: Final = [
+_NON_BOOL: Final[list[object]] = [
     pytest.param("false", id="str"),
     pytest.param(0, id="zero"),
     pytest.param(1, id="one"),
