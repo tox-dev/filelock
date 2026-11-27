@@ -5,6 +5,7 @@ import stat
 import sys
 import warnings
 from errno import EACCES, EBADF, EIO, ENOSYS
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -16,7 +17,6 @@ from tests.native.conftest import interrupt_unix_create
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
     from types import BuiltinFunctionType, FrameType
 
     from pytest_mock import MockerFixture
@@ -338,3 +338,123 @@ def test_target_rejects_flock_after_a_denied_probe(  # pragma: needs fcntl
             0o644,
         )
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.fixture
+def blobfuse2_open_probe(tmp_path: Path, mocker: MockerFixture) -> list[Path]:  # pragma: needs fcntl
+    mocker.patch.object(os, "O_TMPFILE", 0, create=True)
+    real_open = os.open
+    real_close = os.close
+    real_unlink = Path.unlink
+    open_probes: dict[int, Path] = {}
+    probe_paths: list[Path] = []
+
+    def track_open(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        fd = real_open(path, flags, mode, dir_fd=dir_fd)
+        candidate = Path(path)
+        if candidate.name.startswith(".filelock-probe-") and candidate.parent == tmp_path:
+            open_probes[fd] = candidate
+            probe_paths.append(candidate)
+        return fd
+
+    def track_close(fd: int) -> None:
+        open_probes.pop(fd, None)
+        real_close(fd)
+
+    def fail_unlink_while_open(self: Path, *, missing_ok: bool = False) -> None:
+        if self in open_probes.values():
+            raise OSError(EIO, "Input/output error", str(self))
+        real_unlink(self, missing_ok=missing_ok)
+
+    mocker.patch("os.open", autospec=True, side_effect=track_open)
+    mocker.patch("os.close", autospec=True, side_effect=track_close)
+    mocker.patch.object(Path, "unlink", autospec=True, side_effect=fail_unlink_while_open)
+    return probe_paths
+
+
+@NEEDS_FCNTL
+@pytest.mark.usefixtures("blobfuse2_open_probe", "group_writable_umask")
+def test_probe_defers_unlink_until_close_on_eio(tmp_path: Path) -> None:  # pragma: needs fcntl
+    lock_path = tmp_path / "test.lock"
+    with UnixFileLock(lock_path, mode=0o664, timeout=0) as lock:
+        assert lock.is_locked
+        assert stat.S_IMODE(lock_path.stat().st_mode) == 0o664
+    assert list(tmp_path.iterdir()) == [lock_path]
+
+
+@NEEDS_FCNTL
+@NEEDS_STALE_RECLAIM
+@pytest.mark.usefixtures("blobfuse2_open_probe", "unsupported_flock", "group_writable_umask")
+def test_probe_defers_unlink_on_eio_with_soft_fallback(tmp_path: Path) -> None:  # pragma: needs fcntl
+    assert sys.platform != "win32"
+    lock_path = tmp_path / "test.lock"
+    with pytest.warns(UserWarning, match="falling back"), UnixFileLock(lock_path, mode=0o664, timeout=0) as lock:
+        assert lock.pid == os.getpid()
+    assert list(tmp_path.iterdir()) == []
+
+
+@NEEDS_FCNTL
+@pytest.mark.usefixtures("blobfuse2_open_probe")
+def test_probe_defers_unlink_on_eio_when_interrupted(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:  # pragma: needs fcntl
+    mocker.patch("filelock._native._unix.fcntl.flock", autospec=True, side_effect=KeyboardInterrupt)
+    with pytest.raises(KeyboardInterrupt):
+        UnixFileLock(tmp_path / "test.lock", mode=0o664).acquire(timeout=0)
+    assert list(tmp_path.iterdir()) == []
+
+
+@NEEDS_FCNTL
+@pytest.mark.usefixtures("blobfuse2_open_probe")
+@pytest.mark.parametrize(
+    "cleanup", [pytest.param("_close_probe", id="close"), pytest.param("_unlink_unreplaced_probe", id="unlink")]
+)
+def test_probe_defers_unlink_on_eio_when_cleanup_is_interrupted(  # pragma: needs fcntl
+    tmp_path: Path, cleanup: str
+) -> None:
+    def interrupt(
+        frame: FrameType, event: str, _operation: BuiltinFunctionType | None
+    ) -> None:  # pragma: no cover  # profile hooks run with tracing disabled
+        if (
+            event == "call"
+            and frame.f_code.co_name == cleanup
+            and (caller := frame.f_back) is not None
+            and caller.f_code.co_name == "_directory_lacks_flock"
+        ):
+            raise KeyboardInterrupt
+
+    lock = UnixFileLock(tmp_path / "test.lock", mode=0o664)
+    previous = sys.getprofile()
+    try:
+        sys.setprofile(interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            lock.acquire(timeout=0)
+    finally:
+        sys.setprofile(previous)
+    assert list(tmp_path.iterdir()) == []
+
+
+@NEEDS_FCNTL
+def test_probe_unlink_propagates_non_eio_error(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: needs fcntl
+    mocker.patch.object(os, "O_TMPFILE", 0, create=True)
+    mocker.patch.object(Path, "unlink", autospec=True, side_effect=PermissionError(EACCES, "unlink denied"))
+    with pytest.raises(PermissionError, match="unlink denied"):
+        UnixFileLock(tmp_path / "test.lock", mode=0o664).acquire(timeout=0)
+
+
+@NEEDS_FCNTL
+def test_probe_deferred_unlink_leaves_replacement_alone(
+    tmp_path: Path, mocker: MockerFixture, blobfuse2_open_probe: list[Path]
+) -> None:  # pragma: needs fcntl
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"peer")
+
+    def replace_during_flock(_fd: int, _operation: int) -> None:
+        replacement.replace(blobfuse2_open_probe[0])
+        raise KeyboardInterrupt
+
+    mocker.patch("filelock._native._unix.fcntl.flock", autospec=True, side_effect=replace_during_flock)
+    with pytest.raises(KeyboardInterrupt):
+        UnixFileLock(tmp_path / "test.lock", mode=0o664).acquire(timeout=0)
+    (probe,) = tmp_path.iterdir()
+    assert (probe, probe.read_bytes()) == (blobfuse2_open_probe[0], b"peer")
