@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import gc
 import os
+import sqlite3
 import sys
 import textwrap
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, Literal, NoReturn
@@ -21,6 +23,8 @@ from tests.read_write_helpers import writer_gets_in
 from tests.sqlite.process_support import NEEDS_FD_DIRECTORY, run_fork_script
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from _typeshed import StrOrBytesPath  # simplint: ignore[private-import-path]  # tests internal behavior
     from pytest_mock import MockerFixture
 
@@ -105,16 +109,20 @@ def test_read_write_lock_keeps_its_probe_descriptor_while_held(tmp_path: Path) -
 
 
 @NEEDS_FD_DIRECTORY  # pragma: needs fd-directory
-def test_read_write_lock_cycling_beside_a_holder_keeps_descriptors_flat(tmp_path: Path) -> None:
+def test_read_write_lock_cycling_beside_a_holder_keeps_descriptors_flat(
+    tmp_path: Path, settle_sqlite: Callable[[], int | None]
+) -> None:
     lock_path: Final[Path] = tmp_path / "held.db"
     cycler: Final[ReadWriteLock] = ReadWriteLock(lock_path, is_singleton=False)
     with ReadWriteLock(lock_path, is_singleton=False).read_lock():
         with cycler.read_lock():
             pass
+        settle_sqlite()
         before: Final[int] = descriptors_on(lock_path.stat())
         for _ in range(20):
             with cycler.read_lock():
                 pass
+            settle_sqlite()
         assert descriptors_on(lock_path.stat()) == before
 
 
@@ -141,6 +149,7 @@ def test_read_write_lock_close_interrupted_among_its_probes_closes_the_rest_late
     first_name: Literal["older", "newer"],
     last_name: Literal["older", "newer"],
     next_database: str,
+    settle_sqlite: Callable[[], int | None],
 ) -> None:
     lock_path: Final[Path] = tmp_path / "shared.db"
     older: Final[ReadWriteLock] = ReadWriteLock(lock_path, is_singleton=False)
@@ -164,6 +173,7 @@ def test_read_write_lock_close_interrupted_among_its_probes_closes_the_rest_late
     with ReadWriteLock(tmp_path / next_database, is_singleton=False).read_lock():
         pass
 
+    settle_sqlite()
     assert descriptors_on(lock_path.stat()) == 0
 
 
@@ -214,7 +224,11 @@ def test_read_write_lock_release_interrupted_once_its_probe_release_applies(
     [pytest.param("retain", 0, id="new-probe"), pytest.param("adopt", 1, id="idle-probe")],
 )
 def test_read_write_lock_connect_interrupted_once_it_leases_a_probe_releases_it(  # pragma: needs fd-directory
-    tmp_path: Path, mocker: MockerFixture, taking: Literal["retain", "adopt"], idle_connections: int
+    tmp_path: Path,
+    mocker: MockerFixture,
+    taking: Literal["retain", "adopt"],
+    idle_connections: int,
+    settle_sqlite: Callable[[], int | None],
 ) -> None:
     lock_path: Final[Path] = tmp_path / "held.db"
     holder: Final[ReadWriteLock] = ReadWriteLock(lock_path, is_singleton=False)
@@ -241,7 +255,27 @@ def test_read_write_lock_connect_interrupted_once_it_leases_a_probe_releases_it(
     mocker.stopall()
     holder.release()
 
+    settle_sqlite()
     assert descriptors_on(lock_path.stat()) == 0
+
+
+@pytest.fixture(scope="module")  # pragma: needs fd-directory
+def settle_sqlite(tmp_path_factory: pytest.TempPathFactory) -> Callable[[], int | None]:
+    if sys.implementation.name == "graalpy":  # pragma: no cover - the GraalPy job runs unmeasured
+        # Probe plain SQLite so the tests still require immediate closure once the runtime fixes it.
+        database = tmp_path_factory.mktemp("sqlite-descriptor") / "probe.db"
+        with (
+            closing(sqlite3.connect(database, cached_statements=0)) as connection,
+            closing(connection.execute("SELECT 1")) as cursor,
+        ):
+            cursor.fetchone()
+        if descriptors_on(database.stat()):
+            return gc.collect
+    return _already_settled
+
+
+def _already_settled() -> None:  # pragma: needs fd-directory
+    return None
 
 
 @NEEDS_COLLECTED_FINALIZATION
