@@ -13,6 +13,7 @@ from weakref import WeakValueDictionary
 import pytest
 
 from filelock import (
+    AsyncFileLock,
     BaseFileLock,
     FileLock,
     SoftFileLock,
@@ -336,3 +337,18 @@ def test_separate_lock_classes_keep_separate_registries(tmp_path: Path) -> None:
     finally:
         native.release(force=True)
         soft.release(force=True)
+
+
+@pytest.mark.parametrize(
+    "value", [pytest.param("false", id="str"), pytest.param(0, id="zero"), pytest.param(None, id="none")]
+)
+@pytest.mark.parametrize("option", ["thread_local", "is_singleton", "fallback_to_soft", "preserve_lock_file"])
+@pytest.mark.parametrize("lock_type", [FileLock, SoftFileLock, AsyncFileLock])
+def test_constructor_rejects_a_non_bool_option(
+    lock_type: type[BaseFileLock], option: str, value: str | int | None, tmp_path: Path
+) -> None:
+    with pytest.raises(TypeError, match=rf"^{option} must be a bool, not "):
+        lock_type(
+            tmp_path / "a.lock",
+            **{option: value},  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
+        )

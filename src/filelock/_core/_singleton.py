@@ -29,7 +29,6 @@ from ._settings import (
     ExtraValue,
     LockInitValue,
     LockOptions,
-    check_blocking,
     check_bool,
     check_mode,
     override,
@@ -84,7 +83,7 @@ class FileLockMeta(ABCMeta):
         # Validate before __init__: a partial instance can still reach __del__.
         lifetime = resolve_lifetime(lifetime, cls, stacklevel=cls._constructor_lifetime_warning_stacklevel)
         poll_interval = resolve_poll_interval(poll_interval)
-        check_blocking(blocking)
+        check_bool("blocking", blocking)
         check_bool("thread_local", thread_local)
         check_bool("is_singleton", is_singleton)
         check_bool("fallback_to_soft", fallback_to_soft)

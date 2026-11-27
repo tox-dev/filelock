@@ -37,7 +37,7 @@ from ._settings import (
     ContextErrorPolicy,
     ExtraValue,
     LockSettings,
-    check_blocking,
+    check_bool,
     override,
     resolve_lifetime,
     resolve_poll_interval,
@@ -333,7 +333,7 @@ class BaseFileLock(LockAcquisition, contextlib.ContextDecorator, metaclass=FileL
 
     @blocking.setter
     def blocking(self, value: bool) -> None:
-        check_blocking(value)
+        check_bool("blocking", value)
         self._context.blocking = value
 
     @property

@@ -27,7 +27,6 @@ from filelock._core import (
     LockSettings,
     ThreadLocalFileContext,
     Timeout,
-    check_blocking,
     check_bool,
     delegate_to_current,
     override,
@@ -76,6 +75,7 @@ class AsyncFileLockMeta(FileLockMeta):
         executor: futures.Executor | None = None,
         **kwargs: ExtraValue,
     ) -> _AT:
+        check_bool("thread_local", thread_local)
         check_bool("run_in_executor", run_in_executor)
         if thread_local and run_in_executor:
             msg = "run_in_executor is not supported when thread_local is True"
@@ -153,6 +153,7 @@ class BaseAsyncFileLock(AsyncAcquisition, metaclass=AsyncFileLockMeta):
         :param loop: fallback loop for finalization outside a running loop
         :param run_in_executor: run synchronous backend operations in a worker thread
         :param executor: worker pool, or the event loop's default pool when omitted
+        :raises TypeError: invalid option type
 
         Use ``thread_local=False`` with an executor. A worker thread cannot share its caller's thread-local hold.
         """
@@ -237,7 +238,7 @@ class BaseAsyncFileLock(AsyncAcquisition, metaclass=AsyncFileLockMeta):
         if blocking is None:
             blocking = self._context.blocking
 
-        check_blocking(blocking)
+        check_bool("blocking", blocking)
 
         if poll_interval is None:
             poll_interval = self._context.poll_interval

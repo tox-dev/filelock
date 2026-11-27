@@ -83,6 +83,7 @@ class ReadWriteLock(
     :param timeout: default wait in seconds. ``-1`` waits up to SQLite's busy-timeout cap of about 23 days
     :param blocking: whether to wait when the lock is unavailable
     :param is_singleton: reuse the instance for this resolved path
+    :raises TypeError: invalid option type
 
     .. versionadded:: 3.21.0
     """

@@ -118,6 +118,17 @@ def test_constructor_rejects_a_blocking_that_is_not_a_bool(
         )
 
 
+@pytest.mark.parametrize("is_singleton", [pytest.param("false", id="str"), pytest.param(0, id="int")])
+def test_constructor_rejects_an_is_singleton_that_is_not_a_bool(
+    lock_type: type[ReadWriteLock | SoftReadWriteLock], is_singleton: str | int, lock_file: str
+) -> None:
+    with pytest.raises(TypeError, match="is_singleton must be a bool"):
+        lock_type(
+            lock_file,
+            is_singleton=is_singleton,  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
+        )
+
+
 def test_singleton_rejects_different_blocking(lock_file: str) -> None:
     lock = ReadWriteLock(lock_file, blocking=True)
     with pytest.raises(ValueError, match="Singleton lock created with"):

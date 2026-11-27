@@ -216,16 +216,19 @@ def timeout_behavior(timeout: float, *, any_negative: bool) -> float | str:
 
 def resolve_read_write_timeout(timeout: float, *, blocking: bool) -> float:
     # SQLite gives a zero timeout different semantics from the lock API.
-    check_blocking(blocking)
+    check_bool("blocking", blocking)
     if (timeout := resolve_timeout(timeout, blocking=blocking)) < 0 and timeout != -1 and blocking:
         msg = f"timeout must be a non-negative number or -1, not {timeout!r}"
         raise ValueError(msg)
     return timeout
 
 
-def check_blocking(blocking: bool) -> None:  # ruff:ignore[boolean-type-hint-positional-argument]  # validates the option's own value
-    if not isinstance(blocking, bool):
-        msg = f"blocking must be a bool, not {type(blocking).__name__}"
+def check_bool(
+    name: str,
+    value: bool,  # ruff:ignore[boolean-type-hint-positional-argument]  # validates the option's own value
+) -> None:
+    if not isinstance(value, bool):
+        msg = f"{name} must be a bool, not {type(value).__name__}"
         raise TypeError(msg)
 
 
@@ -235,12 +238,6 @@ def resolve_timeout(timeout: float, *, blocking: bool) -> float:
         raise ValueError(msg)
     # Deadlock detection recognizes a negative timeout as unlimited.
     return -1 if timeout == math.inf else timeout
-
-
-def check_bool(name: str, value: bool) -> None:  # ruff:ignore[boolean-type-hint-positional-argument]  # validates the option's own value
-    if not isinstance(value, bool):
-        msg = f"{name} must be a bool, not {type(value).__name__}"
-        raise TypeError(msg)
 
 
 def acquire_thread_lock(
@@ -323,7 +320,6 @@ __all__ = [
     "LockSettings",
     "SoftFileLockLifetimeWarning",
     "acquire_thread_lock",
-    "check_blocking",
     "check_bool",
     "check_mode",
     "check_timeout_max",

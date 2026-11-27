@@ -28,7 +28,7 @@ from ._fork import (
 from ._settings import (
     UNSET_FILE_MODE,
     LockSettings,
-    check_blocking,
+    check_bool,
     override,
     resolve_poll_interval,
     resolve_timeout,
@@ -151,7 +151,7 @@ class FileLockContext:  # simplint: ignore[too-many-attributes]  # its fields ar
         timeout = self.timeout if timeout is None else timeout
         blocking = self.blocking if blocking is None else blocking
 
-        check_blocking(blocking)
+        check_bool("blocking", blocking)
 
         if poll_intervall is not None:
             warnings.warn("use poll_interval instead of poll_intervall", DeprecationWarning, stacklevel=3)

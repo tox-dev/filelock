@@ -16,7 +16,7 @@ import time
 from threading import TIMEOUT_MAX
 from typing import Final
 
-from filelock._core import check_blocking, seconds
+from filelock._core import check_bool, seconds
 
 if sys.platform == "win32":  # pragma: win32 cover
     from ._windows import (
@@ -47,7 +47,7 @@ def lock_descriptor(fd: int, *, blocking: bool = True, poll_interval: float = 0.
 
     .. versionadded:: 3.30.0
     """
-    check_blocking(blocking)
+    check_bool("blocking", blocking)
     if not blocking:
         return lock_fd_nonblocking(fd)
     # time.sleep raises OverflowError past TIMEOUT_MAX; nan fails both comparisons.

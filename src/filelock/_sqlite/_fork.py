@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Final
 from filelock._core import (
     ForkResettable,
     canonical,
-    check_blocking,
     check_bool,
     ensure_current_process,
     override,
@@ -82,7 +81,7 @@ class ReadWriteLockMeta(type):
         is_singleton: bool = True,
     ) -> ReadWriteLock:
         cls._prepare_interpreter()
-        check_blocking(blocking)
+        check_bool("blocking", blocking)
         check_bool("is_singleton", is_singleton)
         timeout = seconds("timeout", timeout)
         if cls._instances_pid != GETPID():

@@ -122,3 +122,12 @@ def test_sync_with_raises_not_implemented_error(lock_type: type[BaseAsyncFileLoc
     # __exit__ must exist so Python can call it after __enter__ raises; without it AttributeError hides the real error
     with pytest.raises(NotImplementedError, match=r"async with"), lock_type(str(tmp_path / "test.lock")):
         pass  # pragma: no cover  # __enter__ raises NotImplementedError, so the body never runs
+
+
+@pytest.mark.parametrize("run_in_executor", [pytest.param("false", id="str"), pytest.param(0, id="int")])
+def test_constructor_rejects_a_run_in_executor_that_is_not_a_bool(run_in_executor: str | int, tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="run_in_executor must be a bool"):
+        AsyncFileLock(
+            tmp_path / "a.lock",
+            run_in_executor=run_in_executor,  # ty: ignore[invalid-argument-type]  # the rejected type is the contract
+        )

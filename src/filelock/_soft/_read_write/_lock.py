@@ -42,7 +42,6 @@ from filelock._core import (
     Timeout,
     acquire_thread_lock,
     canonical,
-    check_blocking,
     check_bool,
     ensure_current_process,
     override,
@@ -88,7 +87,7 @@ class _SoftRWMeta(type):
         on_compromise: Callable[[LeaseCompromise], None] | None = None,
     ) -> SoftReadWriteLock:
         ensure_current_process()
-        check_blocking(blocking)
+        check_bool("blocking", blocking)
         check_bool("is_singleton", is_singleton)
         timeout = seconds("timeout", timeout)
         # Older subclasses may omit on_compromise from their constructors.
@@ -171,6 +170,7 @@ class SoftReadWriteLock(HoldLifecycle, ReadWriteBackend, ForkResettable, ForkCla
     :param stale_threshold: seconds a holder record may go unchanged before eviction (default three heartbeat intervals)
     :param poll_interval: seconds between attempts under contention (default 0.25)
     :param on_compromise: heartbeat callback for eviction or a refresh failure long enough to allow eviction
+    :raises TypeError: invalid option type
 
     .. versionadded:: 3.27.0
 
