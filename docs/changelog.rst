@@ -6,6 +6,25 @@
 
 .. towncrier release notes start
 
+.. _release-4-3-2:
+
+********************
+ 4.3.2 (2026-11-27)
+********************
+
+.. _release-4-3-2-fixed:
+
+Fixed
+=====
+
+- Acquiring a :class:`~filelock.FileLock` with a group- or world-writable ``mode`` on `blobfuse2
+  <https://github.com/Azure/azure-storage-fuse>`_ with ``create-empty-file: false`` no longer fails with ``EIO`` (an
+  input/output error). Before it creates such a lock file, filelock opens a temporary file to check that the directory
+  supports ``flock`` locks. When the filesystem refuses to delete that file while it is open, filelock now deletes it
+  after closing it (:issue:`1130`) (:pr:`1134`) by :user:`Yshuro` and :user:`gaborbernat`.
+- Allow filelock imports from macOS subinterpreters without loading the native PID lookup library (:pr:`1128`) by
+  :user:`gaborbernat`.
+
 .. _release-4-3-1:
 
 ********************
