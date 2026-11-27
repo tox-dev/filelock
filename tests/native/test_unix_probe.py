@@ -405,6 +405,36 @@ def test_probe_defers_unlink_on_eio_when_interrupted(
 
 
 @NEEDS_FCNTL
+@pytest.mark.usefixtures("blobfuse2_open_probe")
+@pytest.mark.parametrize(
+    "cleanup", [pytest.param("_close_probe", id="close"), pytest.param("_unlink_unreplaced_probe", id="unlink")]
+)
+def test_probe_defers_unlink_on_eio_when_cleanup_is_interrupted(  # pragma: needs fcntl
+    tmp_path: Path, cleanup: str
+) -> None:
+    def interrupt(
+        frame: FrameType, event: str, _operation: BuiltinFunctionType | None
+    ) -> None:  # pragma: no cover  # profile hooks run with tracing disabled
+        if (
+            event == "call"
+            and frame.f_code.co_name == cleanup
+            and (caller := frame.f_back) is not None
+            and caller.f_code.co_name == "_directory_lacks_flock"
+        ):
+            raise KeyboardInterrupt
+
+    lock = UnixFileLock(tmp_path / "test.lock", mode=0o664)
+    previous = sys.getprofile()
+    try:
+        sys.setprofile(interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            lock.acquire(timeout=0)
+    finally:
+        sys.setprofile(previous)
+    assert list(tmp_path.iterdir()) == []
+
+
+@NEEDS_FCNTL
 def test_probe_unlink_propagates_non_eio_error(tmp_path: Path, mocker: MockerFixture) -> None:  # pragma: needs fcntl
     mocker.patch.object(os, "O_TMPFILE", 0, create=True)
     mocker.patch.object(Path, "unlink", autospec=True, side_effect=PermissionError(EACCES, "unlink denied"))

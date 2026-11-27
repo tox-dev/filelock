@@ -1,1 +1,4 @@
-Defer unlinking the Unix flock probe file until its descriptor is closed when unlinking an open file fails with ``EIO`` (such as on Azure BlobFuse2).
+Acquiring a :class:`~filelock.FileLock` with a group- or world-writable ``mode`` on `blobfuse2
+<https://github.com/Azure/azure-storage-fuse>`_ with ``create-empty-file: false`` no longer fails with ``EIO``. When
+unlinking the open flock probe file fails with ``EIO``, the probe now removes the file after closing it
+(:issue:`1130`).

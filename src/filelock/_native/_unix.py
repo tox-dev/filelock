@@ -10,7 +10,7 @@ import stat
 import sys
 import warnings
 from contextlib import contextmanager, suppress
-from errno import EACCES, EAGAIN, EBUSY, EIO, ENOSYS, EWOULDBLOCK
+from errno import EACCES, EAGAIN, EIO, ENOSYS, EWOULDBLOCK
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 
@@ -234,10 +234,11 @@ else:  # pragma: win32 no cover
 
         def _directory_lacks_flock(self) -> bool | None:
             opened: list[int] = []
+            unlink_after_close: list[tuple[Path, os.stat_result]] = []
             probes: dict[int, list[int]] = self.__dict__.setdefault("_flock_probes", {})
             try:
                 probes[id(opened)] = opened
-                return self._probe_directory(opened)
+                return self._probe_directory(opened, unlink_after_close)
             finally:
                 try:
                     self._close_probe(opened)
@@ -246,29 +247,29 @@ else:  # pragma: win32 no cover
                     if opened:
                         self._close_probe(opened)
                     probes.pop(id(opened), None)
+                    for name, probe_stat in unlink_after_close:
+                        try:
+                            self._unlink_unreplaced_probe(name, probe_stat)
+                        except BaseException:
+                            self._unlink_unreplaced_probe(name, probe_stat)
+                            raise
 
-        def _probe_directory(self, opened: list[int]) -> bool | None:
+        def _probe_directory(
+            self, opened: list[int], unlink_after_close: list[tuple[Path, os.stat_result]]
+        ) -> bool | None:
             directory = Path(self._lock_path).parent
             if anonymous := getattr(os, "O_TMPFILE", 0):  # pragma: linux cover
                 fd = self._open_probe(opened, str(directory), anonymous | os.O_RDWR | os.O_EXCL)
                 if fd is not None:
                     return _flock_is_missing(fd)
             name = directory / f".filelock-probe-{secrets.token_hex(16)}"
-            deferred_stat: os.stat_result | None = None
             try:
                 fd = self._open_probe(opened, str(name), os.O_RDWR | os.O_CREAT | os.O_EXCL)
-                deferred_stat = self._unlink_probe(name, opened)
-                return None if fd is None else _flock_is_missing(fd)
+                self._unlink_probe(name, opened, unlink_after_close)
             except BaseException:
-                if opened and deferred_stat is None:
-                    deferred_stat = self._unlink_probe(name, opened)
+                self._unlink_probe(name, opened, unlink_after_close)
                 raise
-            finally:
-                if deferred_stat is not None:
-                    try:
-                        self._close_probe(opened)
-                    finally:
-                        self._unlink_closed_probe(name, deferred_stat)
+            return None if fd is None else _flock_is_missing(fd)
 
         @staticmethod
         def _open_probe(opened: list[int], path: str, flags: int) -> int | None:
@@ -279,33 +280,32 @@ else:  # pragma: win32 no cover
                     raise
                 return None
 
-        @staticmethod
-        def _unlink_probe(name: Path, opened: list[int]) -> os.stat_result | None:
+        @classmethod
+        def _unlink_probe(
+            cls, name: Path, opened: list[int], unlink_after_close: list[tuple[Path, os.stat_result]]
+        ) -> None:
             if not opened:
-                return None
-            with suppress(FileNotFoundError):
-                probe_stat = os.fstat(opened[0])
-                if not os.path.samestat(name.lstat(), probe_stat):
-                    return None
-                try:
-                    name.unlink()
-                except OSError as exception:
-                    if exception.errno in {EIO, EBUSY}:
-                        return probe_stat
+                return
+            probe_stat = os.fstat(opened[0])
+            try:
+                cls._unlink_unreplaced_probe(name, probe_stat)
+            except OSError as exception:
+                # blobfuse2 keeps a new file in its local cache until close and cannot unlink it before then.
+                if exception.errno != EIO:
                     raise
-            return None
-
-        @staticmethod
-        def _unlink_closed_probe(name: Path, probe_stat: os.stat_result) -> None:
-            with suppress(FileNotFoundError):
-                if os.path.samestat(name.lstat(), probe_stat):
-                    name.unlink()
+                unlink_after_close.append((name, probe_stat))
 
         @staticmethod
         def _close_probe(opened: list[int]) -> None:
             if opened:
                 # Child reset and normal cleanup may both run. Retire and close once in a chain of C calls.
                 list(map(os.close, map(opened.pop, (0,))))
+
+        @staticmethod
+        def _unlink_unreplaced_probe(name: Path, probe_stat: os.stat_result) -> None:
+            with suppress(FileNotFoundError):
+                if os.path.samestat(name.lstat(), probe_stat):
+                    name.unlink()
 
         def _fallback_to_soft_lock(self) -> None:
             with self._transition_lock:
