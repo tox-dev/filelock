@@ -1,4 +1,5 @@
 Acquiring a :class:`~filelock.FileLock` with a group- or world-writable ``mode`` on `blobfuse2
-<https://github.com/Azure/azure-storage-fuse>`_ with ``create-empty-file: false`` no longer fails with ``EIO``. When
-unlinking the open flock probe file fails with ``EIO``, the probe now removes the file after closing it
-(:issue:`1130`).
+<https://github.com/Azure/azure-storage-fuse>`_ with ``create-empty-file: false`` no longer fails with ``EIO`` (an
+input/output error). Before it creates such a lock file, filelock opens a temporary file to check that the directory
+supports ``flock`` locks. When the filesystem refuses to delete that file while it is open, filelock now deletes it
+after closing it (:issue:`1130`).
