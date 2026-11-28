@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 
 __lazy_modules__ = [
     "pathlib",
+    "types",
     f"{__spec__.parent}._fork",
     f"{__spec__.parent}._registry",
     f"{__spec__.parent}._shutdown",
@@ -17,6 +18,7 @@ __lazy_modules__ = [
 import os
 from abc import ABCMeta
 from pathlib import PurePath
+from types import MethodType
 from typing import TypeVar, cast
 
 from ._fork import ensure_current_process, fork_transition
@@ -166,9 +168,14 @@ def _check_cached_options(instance: BaseFileLock, options: LockOptions, extras: 
         if requested != existing
     }
     mismatches.update(instance._singleton_extra_mismatches(extras))  # ruff:ignore[private-member-access]  # subclass settings participate in singleton identity
-    # Equal callables can close over different state.
     hook = options["on_acquired"]
-    hook_mismatch = hook is not instance.on_acquired
+    existing_hook = instance.on_acquired
+    # Bound methods are rebuilt on each access; compare their target pair, never arbitrary __eq__.
+    if isinstance(hook, MethodType) and isinstance(existing_hook, MethodType):
+        same_hook = hook.__func__ is existing_hook.__func__ and hook.__self__ is existing_hook.__self__
+    else:
+        same_hook = hook is existing_hook
+    hook_mismatch = not same_hook
     if not mismatches and not hook_mismatch:
         return
     msg = "Singleton lock instances cannot be initialized with differing arguments\nNon-matching arguments: "
