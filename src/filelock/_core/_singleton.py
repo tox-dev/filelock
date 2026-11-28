@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 
 __lazy_modules__ = [
     "pathlib",
+    "types",
     f"{__spec__.parent}._fork",
     f"{__spec__.parent}._registry",
     f"{__spec__.parent}._shutdown",
@@ -145,13 +146,6 @@ class FileLockMeta(ABCMeta):
         return cast("_T", instance)
 
 
-def _same_callback(left: object, right: object) -> bool:
-    # Bound methods are rebuilt on each attribute access; compare their target pair, not arbitrary __eq__.
-    if isinstance(left, MethodType) and isinstance(right, MethodType):
-        return left.__func__ is right.__func__ and left.__self__ is right.__self__
-    return left is right
-
-
 def _check_cached_options(instance: BaseFileLock, options: LockOptions, extras: dict[str, ExtraValue]) -> None:
     mismatches = {
         name: (str(requested), str(existing))
@@ -184,6 +178,13 @@ def _check_cached_options(instance: BaseFileLock, options: LockOptions, extras: 
     if hook_mismatch:
         msg += f"\n\ton_acquired (existing lock has {instance.on_acquired} but {hook} was passed)"
     raise ValueError(msg)
+
+
+def _same_callback(left: object, right: object) -> bool:
+    # Bound methods are rebuilt on each attribute access; compare their target pair, not arbitrary __eq__.
+    if isinstance(left, MethodType) and isinstance(right, MethodType):
+        return left.__func__ is right.__func__ and left.__self__ is right.__self__
+    return left is right
 
 
 __all__ = [
