@@ -15,6 +15,7 @@ __lazy_modules__ = [
     "pathlib",
     "secrets",
     "threading",
+    "types",
     "weakref",
     f"{__spec__.parent}._records",
 ]
@@ -28,6 +29,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from math import isfinite
 from threading import Event, Thread, current_thread
+from types import MethodType
 from typing import TYPE_CHECKING, Final, Literal
 from weakref import WeakMethod
 
@@ -148,8 +150,14 @@ class SoftFileLease(MarkerSoftFileLock):
         )
         if heartbeat_interval != self._heartbeat_interval:
             mismatches["heartbeat_interval"] = (str(passed), str(self._heartbeat_interval))
-        # Equal callables can close over different state.
-        if (on_compromise := kwargs.get("on_compromise")) is not self._on_compromise:
+        on_compromise, existing = kwargs.get("on_compromise"), self._on_compromise
+        # Bound methods are rebuilt on each access, so compare their target pair. Equal callables can close over
+        # different state: anything else must be the same object.
+        if isinstance(on_compromise, MethodType) and isinstance(existing, MethodType):
+            same = on_compromise.__func__ is existing.__func__ and on_compromise.__self__ is existing.__self__
+        else:
+            same = on_compromise is existing
+        if not same:
             mismatches["on_compromise"] = (str(on_compromise), str(self._on_compromise))
         return mismatches
 
