@@ -17,6 +17,7 @@ __lazy_modules__ = [
 import os
 from abc import ABCMeta
 from pathlib import PurePath
+from types import MethodType
 from typing import TypeVar, cast
 
 from ._fork import ensure_current_process, fork_transition
@@ -144,6 +145,13 @@ class FileLockMeta(ABCMeta):
         return cast("_T", instance)
 
 
+def _same_callback(left: object, right: object) -> bool:
+    # Bound methods are rebuilt on each attribute access; compare their target pair, not arbitrary __eq__.
+    if isinstance(left, MethodType) and isinstance(right, MethodType):
+        return left.__func__ is right.__func__ and left.__self__ is right.__self__
+    return left is right
+
+
 def _check_cached_options(instance: BaseFileLock, options: LockOptions, extras: dict[str, ExtraValue]) -> None:
     mismatches = {
         name: (str(requested), str(existing))
@@ -166,9 +174,8 @@ def _check_cached_options(instance: BaseFileLock, options: LockOptions, extras: 
         if requested != existing
     }
     mismatches.update(instance._singleton_extra_mismatches(extras))  # ruff:ignore[private-member-access]  # subclass settings participate in singleton identity
-    # Equal callables can close over different state.
     hook = options["on_acquired"]
-    hook_mismatch = hook is not instance.on_acquired
+    hook_mismatch = not _same_callback(hook, instance.on_acquired)
     if not mismatches and not hook_mismatch:
         return
     msg = "Singleton lock instances cannot be initialized with differing arguments\nNon-matching arguments: "

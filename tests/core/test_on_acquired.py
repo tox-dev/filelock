@@ -211,6 +211,51 @@ def test_singleton_rejects_different_on_acquired(tmp_path: Path) -> None:
         first.release(force=True)
 
 
+class _BoundHook:
+    def on_acquired(self, _fd: int) -> None:  # ruff:ignore[no-self-use]  # a bound method is what the test exercises
+        return None
+
+
+def test_singleton_shares_same_bound_method(tmp_path: Path) -> None:
+    hook = _BoundHook()
+    path = str(tmp_path / "a")
+    first = FileLock(path, is_singleton=True, on_acquired=hook.on_acquired)
+    try:
+        # Every attribute access builds a new bound-method object, but both denote the same callback.
+        assert FileLock(path, is_singleton=True, on_acquired=hook.on_acquired) is first
+    finally:
+        first.release(force=True)
+
+
+def test_singleton_rejects_bound_method_of_another_object(tmp_path: Path) -> None:
+    path = str(tmp_path / "a")
+    first = FileLock(path, is_singleton=True, on_acquired=_BoundHook().on_acquired)
+    try:
+        with pytest.raises(ValueError, match="on_acquired"):
+            FileLock(path, is_singleton=True, on_acquired=_BoundHook().on_acquired)
+    finally:
+        first.release(force=True)
+
+
+def test_singleton_rejects_value_equal_but_distinct_hooks(tmp_path: Path) -> None:
+    class EqualHook:
+        def __call__(self, _fd: int) -> None:
+            return None
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, EqualHook)
+
+        __hash__ = object.__hash__
+
+    path = str(tmp_path / "a")
+    first = FileLock(path, is_singleton=True, on_acquired=EqualHook())
+    try:
+        with pytest.raises(ValueError, match="on_acquired"):
+            FileLock(path, is_singleton=True, on_acquired=EqualHook())
+    finally:
+        first.release(force=True)
+
+
 @pytest.mark.parametrize("force", [False, True])
 def test_hook_cannot_leave_acquire_unheld(tmp_path: Path, *, force: bool) -> None:
     path = tmp_path / "hook.lock"
