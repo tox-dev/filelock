@@ -320,6 +320,27 @@ def test_lease_singleton_resolves_an_omitted_heartbeat_before_comparing(
     assert lease_type(str(marker), is_singleton=True, lease_duration=6, heartbeat_interval=2) is lease
 
 
+@pytest.mark.parametrize("lease_type", _LEASE_TYPES)
+def test_lease_singleton_accepts_the_same_bound_method_callback_again(
+    marker: Path, lease_type: type[SoftFileLease]
+) -> None:
+    class Service:
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, Service)
+
+        __hash__ = object.__hash__
+
+        def on_lost(self, compromise: LeaseCompromise) -> None: ...
+
+    service = Service()
+    lease = lease_type(str(marker), is_singleton=True, on_compromise=service.on_lost)
+
+    assert lease_type(str(marker), is_singleton=True, on_compromise=service.on_lost) is lease
+    # an equal but distinct object is another callback
+    with pytest.raises(ValueError, match=r"\n\ton_compromise \(existing lock has "):
+        lease_type(str(marker), is_singleton=True, on_compromise=Service().on_lost)
+
+
 @pytest.mark.parametrize(
     "setting", [pytest.param(name, id=name) for name in ("lease_duration", "heartbeat_interval", "on_compromise")]
 )
